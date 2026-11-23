@@ -17,6 +17,8 @@ locals {
     blobPrefix           = local.blob_prefix
     scopes               = join(" ", aws_cognito_user_pool_client.browser.allowed_oauth_scopes)
     sessionMaxAgeSeconds = local.session_days * 24 * 60 * 60
+    # ID トークンの残りがこれより短ければ取り直す。有効期間を短くしたときに、毎回取り直さないよう 1/4 までにする
+    refreshBeforeSeconds = floor(min(300, var.token_validity_minutes * 60 / 4))
     docsCsp              = local.docs_csp
   }
 }

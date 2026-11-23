@@ -58,6 +58,17 @@ variable "mfa_configuration" {
   }
 }
 
+variable "token_validity_minutes" {
+  description = "ブラウザーのログインの ID トークン（とアクセストークン）の有効期間（分）。利用者を止めたりログアウトしたりしても、持っている ID トークンはこの時間まで使えるので、すぐに止めたいなら短くする（5〜1440）"
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = var.token_validity_minutes >= 5 && var.token_validity_minutes <= 1440
+    error_message = "token_validity_minutes は 5 から 1440 のあいだにしてください。"
+  }
+}
+
 variable "deletion_protection" {
   description = "Cognito のユーザープールと DynamoDB のテーブルの削除保護。S3 のバケットも、true のあいだは中身があると消さない。destroy の前に false にして apply する"
   type        = bool

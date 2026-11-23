@@ -157,11 +157,13 @@ resource "aws_cloudfront_origin_access_control" "docs" {
   signing_protocol                  = "sigv4"
 }
 
-# 中身で決まる URL なので長くキャッシュする。キャッシュのキーは、書き換えたあとのパス（S3 のキー）と download だけ
+# 中身で決まる URL なので長くキャッシュする。キャッシュのキーは、書き換えたあとのパス（S3 のキー）と download だけ。
+# ブラウザーへの応答は private（Lambda@Edge の origin-response が付ける）なので、最小 TTL を 1 年にして、
+# private でも CloudFront にはキャッシュさせる（最小 TTL が 0 より大きいと private などより優先される）
 resource "aws_cloudfront_cache_policy" "docs" {
   name        = "${var.name}-docs"
   comment     = "Galley: 資料配信"
-  min_ttl     = 0
+  min_ttl     = 31536000
   default_ttl = 31536000
   max_ttl     = 31536000
 
@@ -254,6 +256,12 @@ resource "aws_cloudfront_distribution" "docs" {
       lambda_arn   = aws_lambda_function.edge.qualified_arn
       include_body = false
     }
+  }
+
+  # 無い実体（404）は短くだけキャッシュする（既定と同じ 10 秒。最小 TTL の 1 年をエラーに使わせない）
+  custom_error_response {
+    error_code            = 404
+    error_caching_min_ttl = 10
   }
 
   restrictions {

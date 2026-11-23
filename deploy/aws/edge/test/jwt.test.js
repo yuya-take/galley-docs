@@ -113,3 +113,18 @@ test('JWKS を取れないときは ServiceUnavailableError にする', async ()
     await assert.rejects(verifier.verifyIdToken(idToken(keys[0], time.seconds())), ServiceUnavailableError);
   }
 });
+
+test('allowExpired では期限だけを見ず、署名・発行元・aud・種類は確かめる', async () => {
+  const { time, keys, verifier } = setup();
+  const now = time.seconds();
+  const expired = idToken(keys[0], now - 7200, { exp: now - 3600 });
+  assert.equal(await verifier.verifyIdToken(expired), null);
+  assert.equal((await verifier.verifyIdToken(expired, { allowExpired: true })).sub, 'user-1');
+  for (const token of [
+    idToken(signingKey('key-1'), now - 7200, { exp: now - 3600 }),
+    idToken(keys[0], now - 7200, { exp: now - 3600, aud: 'other-client' }),
+    idToken(keys[0], now - 7200, { exp: now - 3600, token_use: 'access' }),
+  ]) {
+    assert.equal(await verifier.verifyIdToken(token, { allowExpired: true }), null);
+  }
+});

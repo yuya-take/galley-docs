@@ -21,6 +21,9 @@ const {
 } = require('./helpers');
 
 const HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+/** Cognito のリフレッシュトークンの形（暗号化された JWE。5 つの部分）を真似た値。 */
+const REFRESH = ['eyJjdHkiOiJKV1QiLCJlbmMiOiJBMjU2R0NNIiwiYWxnIjoiUlNBLU9BRVAifQ', 'a'.repeat(342), 'b'.repeat(16), 'c'.repeat(1200), 'd'.repeat(22)].join('.');
+const REFRESH_2 = REFRESH.replace('a', 'e');
 
 /**
  * 関数とまわりを用意する。`token` は Cognito のトークンのエンドポイントの応答を作る関数。
@@ -121,7 +124,7 @@ test('戻り先で、コードをトークンに換えて Cookie を出し、元
       return jsonResponse(200, {
         id_token: idToken(s.key, s.time.seconds()),
         access_token: 'access',
-        refresh_token: 'refresh-1',
+        refresh_token: REFRESH,
         expires_in: 3600,
       });
     },
@@ -148,7 +151,7 @@ test('戻り先で、コードをトークンに換えて Cookie を出し、元
 
   const id = cookieNamed(response, ID_COOKIE);
   assert.deepEqual(id.attributes, ['Domain=galley.example.com', 'Path=/', 'Max-Age=2592000', 'Secure', 'HttpOnly', 'SameSite=Lax']);
-  assert.equal(cookieNamed(response, REFRESH_COOKIE).value, 'refresh-1');
+  assert.equal(cookieNamed(response, REFRESH_COOKIE).value, REFRESH);
   const cleared = cookieNamed(response, login.name);
   assert.equal(cleared.value, '');
   assert.ok(cleared.attributes.includes('Max-Age=0'));
@@ -157,7 +160,7 @@ test('戻り先で、コードをトークンに換えて Cookie を出し、元
 
 test('戻り先は 2 つのホスト名だけに限る', async () => {
   const s = setup({
-    token: () => jsonResponse(200, { id_token: idToken(s.key, s.time.seconds()), refresh_token: 'r' }),
+    token: () => jsonResponse(200, { id_token: idToken(s.key, s.time.seconds()), refresh_token: REFRESH }),
   });
   const state = 'A'.repeat(43);
   const cases = {
@@ -227,13 +230,13 @@ test('期限が近ければリフレッシュトークンで取り直し、Cooki
       host: config.docsHost,
       uri: `/b/${HASH}`,
       method: 'GET',
-      cookies: { [ID_COOKIE]: token, [REFRESH_COOKIE]: 'refresh-1' },
+      cookies: { [ID_COOKIE]: token, [REFRESH_COOKIE]: REFRESH },
       headers: { 'sec-fetch-dest': 'iframe' },
     }),
   );
   assert.equal(response.status, '307');
   assert.equal(header(response, 'location')[0], `https://docs.galley.example.com/b/${HASH}`);
-  assert.deepEqual(tokenRequest, { client_id: config.clientId, grant_type: 'refresh_token', refresh_token: 'refresh-1' });
+  assert.deepEqual(tokenRequest, { client_id: config.clientId, grant_type: 'refresh_token', refresh_token: REFRESH });
   assert.ok(cookieNamed(response, ID_COOKIE).value);
   // リフレッシュトークンが返らなければ（入れ替えなし）、今の Cookie のままにする
   assert.equal(cookieNamed(response, REFRESH_COOKIE), undefined);
@@ -243,7 +246,7 @@ test('期限切れで取り直せなければ、Cookie を消してログイン�
   const s = setup();
   const token = loggedIn(s);
   s.time.advance(7200);
-  const response = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: token, [REFRESH_COOKIE]: 'revoked' } }));
+  const response = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: token, [REFRESH_COOKIE]: REFRESH_2 } }));
   assert.equal(response.status, '302');
   assert.equal(cookieNamed(response, ID_COOKIE).value, '');
   assert.equal(cookieNamed(response, REFRESH_COOKIE).value, '');
@@ -254,7 +257,7 @@ test('期限が近くても、取り直せなければ期限まではそのま�
     const s = setup({ token });
     const id = loggedIn(s);
     s.time.advance(3600 - 120);
-    const result = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: id, [REFRESH_COOKIE]: 'r' } }));
+    const result = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: id, [REFRESH_COOKIE]: REFRESH } }));
     assert.ok(isRequest(result));
   }
 });
@@ -286,7 +289,7 @@ test('Cognito のトークンのエンドポイントに届かず、ID トーク
   });
   const token = loggedIn(s);
   s.time.advance(7200);
-  const response = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: token, [REFRESH_COOKIE]: 'r' } }));
+  const response = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: token, [REFRESH_COOKIE]: REFRESH } }));
   assert.equal(response.status, '503');
 });
 
@@ -326,7 +329,7 @@ test('知らないホスト名（CloudFront の既定のドメインなど）は
 test('ログアウトで Cookie を消し、リフレッシュトークンを取り消して Cognito のログアウトに回す', async () => {
   const s = setup();
   const response = await s.handler(
-    viewerRequest({ uri: '/_auth/signout', cookies: { [ID_COOKIE]: loggedIn(s), [REFRESH_COOKIE]: 'refresh-1' } }),
+    viewerRequest({ uri: '/_auth/signout', cookies: { [ID_COOKIE]: loggedIn(s), [REFRESH_COOKIE]: REFRESH } }),
   );
   assert.equal(response.status, '302');
   const location = new URL(header(response, 'location')[0]);
@@ -335,7 +338,7 @@ test('ログアウトで Cookie を消し、リフレッシュトークンを取
   assert.equal(cookieNamed(response, ID_COOKIE).value, '');
   assert.equal(cookieNamed(response, REFRESH_COOKIE).value, '');
   const revoke = s.calls.find((c) => c.url === revokeUrl);
-  assert.deepEqual(revoke.body, { client_id: config.clientId, token: 'refresh-1' });
+  assert.deepEqual(revoke.body, { client_id: config.clientId, token: REFRESH });
 });
 
 test('/_auth/ のほかのパスはアプリに渡さない', async () => {
@@ -344,11 +347,114 @@ test('/_auth/ のほかのパスはアプリに渡さない', async () => {
   assert.equal(response.status, '404');
 });
 
+test('リフレッシュトークンの形が合わない・ID トークンが無い・偽の ID トークンなら、Cognito を呼ばずにログインに回す', async () => {
+  const s = setup({
+    token: () => jsonResponse(200, { id_token: idToken(s.key, s.time.seconds()) }),
+  });
+  const now = s.time.seconds();
+  const expired = idToken(s.key, now - 7200, { exp: now - 3600 });
+  const cases = {
+    'ID トークンなし': { [REFRESH_COOKIE]: REFRESH },
+    '偽の ID トークン': { [ID_COOKIE]: idToken(signingKey('key-1'), now - 7200, { exp: now - 3600 }), [REFRESH_COOKIE]: REFRESH },
+    '別のクライアントの ID トークン': { [ID_COOKIE]: idToken(s.key, now - 7200, { exp: now - 3600, aud: 'other' }), [REFRESH_COOKIE]: REFRESH },
+    短すぎる: { [ID_COOKIE]: expired, [REFRESH_COOKIE]: 'short' },
+    使えない文字: { [ID_COOKIE]: expired, [REFRESH_COOKIE]: `${REFRESH}%` },
+    長すぎる: { [ID_COOKIE]: expired, [REFRESH_COOKIE]: 'a'.repeat(8193) },
+  };
+  for (const [name, cookies] of Object.entries(cases)) {
+    const response = await s.handler(viewerRequest({ uri: '/', cookies }));
+    assert.equal(response.status, '302', name);
+    assert.match(header(response, 'location')[0], /\/oauth2\/authorize\?/, name);
+    assert.equal(cookieNamed(response, REFRESH_COOKIE).value, '', name);
+  }
+  assert.equal(s.calls.filter((c) => c.url === tokenUrl).length, 0);
+
+  // このプールが出した期限切れの ID トークンと、形の合うリフレッシュトークンなら取り直す
+  const refreshed = await s.handler(viewerRequest({ uri: '/', cookies: { [ID_COOKIE]: expired, [REFRESH_COOKIE]: REFRESH } }));
+  assert.equal(refreshed.status, '307');
+  assert.equal(s.calls.filter((c) => c.url === tokenUrl).length, 1);
+});
+
+test('取り直すまでの残り時間は、設定（有効期間から決めた値）に従う', async () => {
+  const time = clock();
+  const key = signingKey('key-1');
+  const { fetch, calls } = fakeFetch({
+    [jwksUrl]: () => jsonResponse(200, { keys: [key.jwk] }),
+    [tokenUrl]: () => jsonResponse(200, { id_token: idToken(key, time.seconds(), { exp: time.seconds() + 300 }) }),
+  });
+  const handler = createHandler({ ...config, refreshBeforeSeconds: 75 }, { fetch, now: time.now });
+  const token = idToken(key, time.seconds(), { exp: time.seconds() + 300 });
+  const cookies = { [ID_COOKIE]: token, [REFRESH_COOKIE]: REFRESH };
+  time.advance(200);
+  assert.ok(isRequest(await handler(viewerRequest({ uri: '/', cookies }))));
+  time.advance(30);
+  assert.equal((await handler(viewerRequest({ uri: '/', cookies }))).status, '307');
+  assert.equal(calls.filter((c) => c.url === tokenUrl).length, 1);
+});
+
+test('戻り先で、途中でやめたログインの Cookie もまとめて消す', async () => {
+  const s = setup({
+    token: () => jsonResponse(200, { id_token: idToken(s.key, s.time.seconds()), refresh_token: REFRESH }),
+  });
+  const state = 'A'.repeat(43);
+  const saved = Buffer.from(JSON.stringify({ v: 'v'.repeat(43), r: 'https://galley.example.com/' })).toString('base64url');
+  const response = await s.handler(
+    viewerRequest({
+      uri: '/_auth/callback',
+      querystring: `code=abc&state=${state}`,
+      cookies: {
+        [`${LOGIN_COOKIE_PREFIX}${state}`]: saved,
+        [`${LOGIN_COOKIE_PREFIX}${'B'.repeat(43)}`]: 'old',
+        [`${LOGIN_COOKIE_PREFIX}${'C'.repeat(43)}`]: 'old',
+        galley_author: 'x',
+      },
+    }),
+  );
+  assert.equal(response.status, '302');
+  const cleared = setCookies(response)
+    .filter((c) => c.name.startsWith(LOGIN_COOKIE_PREFIX))
+    .map((c) => `${c.name}=${c.value}; ${c.attributes.includes('Max-Age=0')}`)
+    .sort();
+  assert.deepEqual(cleared, [
+    `${LOGIN_COOKIE_PREFIX}${'A'.repeat(43)}=; true`,
+    `${LOGIN_COOKIE_PREFIX}${'B'.repeat(43)}=; true`,
+    `${LOGIN_COOKIE_PREFIX}${'C'.repeat(43)}=; true`,
+  ]);
+  assert.equal(cookieNamed(response, 'galley_author'), undefined);
+});
+
+test('ほかのサイトや資料の iframe から移動させられたログアウトは、すぐには行わずリンクを出す', async () => {
+  const s = setup();
+  for (const site of ['cross-site', 'same-site']) {
+    const response = await s.handler(
+      viewerRequest({
+        uri: '/_auth/signout',
+        cookies: { [ID_COOKIE]: loggedIn(s), [REFRESH_COOKIE]: REFRESH },
+        headers: { 'sec-fetch-site': site },
+      }),
+    );
+    assert.equal(response.status, '200', site);
+    assert.match(response.body, /href="https:\/\/galley\.example\.com\/_auth\/signout"/);
+    assert.deepEqual(setCookies(response), [], site);
+    assert.ok(header(response, 'content-security-policy')[0].includes("frame-ancestors 'none'"));
+  }
+  assert.equal(s.calls.filter((c) => c.url === revokeUrl).length, 0);
+
+  for (const site of ['same-origin', 'none']) {
+    const response = await s.handler(
+      viewerRequest({ uri: '/_auth/signout', cookies: { [REFRESH_COOKIE]: REFRESH }, headers: { 'sec-fetch-site': site } }),
+    );
+    assert.equal(response.status, '302', site);
+    assert.equal(cookieNamed(response, ID_COOKIE).value, '', site);
+  }
+});
+
 test('origin-response: 200 には長いキャッシュと、download があれば Content-Disposition を付ける', async () => {
   const s = setup();
   const uri = `/blobs/e3/b0/${HASH}.html`;
   const plain = await s.handler(originResponse({ uri, status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }));
-  assert.equal(header(plain, 'cache-control')[0], 'public, max-age=31536000, immutable');
+  // ログインが要る内容なので、途中のキャッシュには置かせない（CloudFront はキャッシュポリシーの最小 TTL でキャッシュする）
+  assert.equal(header(plain, 'cache-control')[0], 'private, max-age=31536000, immutable');
   assert.deepEqual(header(plain, 'content-disposition'), []);
 
   const download = await s.handler(originResponse({ uri, querystring: 'download=keikaku', status: 200 }));

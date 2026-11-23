@@ -8,7 +8,11 @@ const BLOB_PATH = /^\/b\/([0-9a-f]{64})$/;
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SLUG_MAX_LEN = 64;
 const RESERVED_DOCUMENT_SLUGS = new Set(['settings']);
-const CACHE_IMMUTABLE = 'public, max-age=31536000, immutable';
+/**
+ * ブラウザーへのキャッシュの指定。ログインが要る内容なので、途中のキャッシュ（会社のプロキシなど）には置かせない
+ * （private）。CloudFront は、キャッシュポリシーの最小 TTL（1 年）で private でもキャッシュする。
+ */
+const CACHE_IMMUTABLE = 'private, max-age=31536000, immutable';
 
 function isDocumentSlug(value) {
   return (

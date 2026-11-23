@@ -15,9 +15,14 @@ const LOGIN_COOKIE_MAX_AGE = 600;
 const AUTH_PREFIX = '/_auth/';
 const CALLBACK_PATH = '/_auth/callback';
 const SIGNOUT_PATH = '/_auth/signout';
-/** ID トークンの残りがこれより短ければ、リフレッシュトークンで取り直す。 */
-const REFRESH_BEFORE_SECONDS = 300;
 const STATE_PATTERN = /^[A-Za-z0-9_-]{22,64}$/;
+/**
+ * リフレッシュトークンとして受け付ける形（文字の種類と長さ）。Cognito のリフレッシュトークンは中身を見られない
+ * （暗号化されている）ので、形だけを見て、明らかに違う値で Cognito を呼ばない。
+ */
+const REFRESH_TOKEN_PATTERN = /^[A-Za-z0-9._-]{20,8192}$/;
+/** ログアウトを受け付けるリクエスト元。ほかのサイトや資料の iframe から移動させられたものは、確かめてから行う。 */
+const SIGNOUT_FETCH_SITES = new Set(['', 'same-origin', 'none']);
 
 function headerValue(request, name) {
   const values = request.headers[name];
@@ -63,6 +68,8 @@ function createHandler(config, deps = {}) {
     fetch: fetchImpl,
   });
   const responses = createResponses(config);
+  /** ID トークンの残りがこれより短ければ、リフレッシュトークンで取り直す（Terraform が有効期間から決める）。 */
+  const refreshBeforeSeconds = config.refreshBeforeSeconds;
 
   function cookie(name, value, { path = '/', maxAge = config.sessionMaxAgeSeconds } = {}) {
     return serializeCookie(name, value, { domain: config.cookieDomain, path, maxAge });
@@ -137,12 +144,22 @@ function createHandler(config, deps = {}) {
     const cookies = parseCookies(request.headers);
     const claims = await verifier.verifyIdToken(cookies.get(ID_COOKIE));
     const nowSeconds = Math.floor(now() / 1000);
-    if (claims && claims.exp - nowSeconds > REFRESH_BEFORE_SECONDS) {
+    if (claims && claims.exp - nowSeconds > refreshBeforeSeconds) {
       return null;
     }
+    // Cognito を呼ぶのは、リフレッシュトークンの形が合い、このプールが出した ID トークン（期限切れでよい）も
+    // 持っているときだけにする。偽の Cookie を付けた匿名のリクエストで、トークンのエンドポイントを叩かせない
     const refreshToken = cookies.get(REFRESH_COOKIE);
-    if (!refreshToken) {
-      return claims ? null : unauthenticated(request, site, cookies.has(ID_COOKIE) ? [clearCookie(ID_COOKIE)] : []);
+    const canRefresh =
+      typeof refreshToken === 'string' &&
+      REFRESH_TOKEN_PATTERN.test(refreshToken) &&
+      (claims !== null || (await verifier.verifyIdToken(cookies.get(ID_COOKIE), { allowExpired: true })) !== null);
+    if (!canRefresh) {
+      if (claims) {
+        return null;
+      }
+      const stale = [ID_COOKIE, REFRESH_COOKIE].filter((name) => cookies.has(name)).map((name) => clearCookie(name));
+      return unauthenticated(request, site, stale);
     }
     let tokens;
     try {
@@ -178,8 +195,16 @@ function createHandler(config, deps = {}) {
       return responses.page('app', 400, 'ログインをやり直してください', 'ログインの手続きが正しくありません。', { link: retry });
     }
     const loginCookieName = `${LOGIN_COOKIE_PREFIX}${state}`;
-    const setCookies = [clearCookie(loginCookieName, CALLBACK_PATH)];
-    const saved = decodeLoginState(parseCookies(request.headers).get(loginCookieName));
+    const cookies = parseCookies(request.headers);
+    // 戻り先には、途中でやめたログインの Cookie も届く（Path が同じ）。ここでまとめて消し、溜まらないようにする
+    const loginCookies = new Set([loginCookieName]);
+    for (const name of cookies.keys()) {
+      if (name.startsWith(LOGIN_COOKIE_PREFIX) && STATE_PATTERN.test(name.slice(LOGIN_COOKIE_PREFIX.length))) {
+        loginCookies.add(name);
+      }
+    }
+    const setCookies = [...loginCookies].map((name) => clearCookie(name, CALLBACK_PATH));
+    const saved = decodeLoginState(cookies.get(loginCookieName));
     if (!saved) {
       // 期限（10 分）を過ぎたか、別のブラウザーで戻ってきた。ここで自動でやり直すと、Cookie を保存できない
       // ブラウザーで行き来が止まらなくなるので、リンクを出す
@@ -206,8 +231,17 @@ function createHandler(config, deps = {}) {
     return responses.redirect('app', 302, safeReturnUrl(saved.r), setCookies);
   }
 
-  /** Cookie を消し、リフレッシュトークンを取り消して、Cognito のログアウトに回す。 */
+  /**
+   * Cookie を消し、リフレッシュトークンを取り消して、Cognito のログアウトに回す。
+   * ほかのサイトや資料の iframe から移動させられたとき（Sec-Fetch-Site が same-origin・none 以外）は、
+   * すぐには行わず、ログアウトのリンクを出して利用者に押してもらう
+   */
   async function signout(request) {
+    if (!SIGNOUT_FETCH_SITES.has(headerValue(request, 'sec-fetch-site'))) {
+      return responses.page('app', 200, 'ログアウトしますか', 'ほかのページからログアウトに移動しました。ログアウトするなら、下のリンクを押してください。', {
+        link: { href: `${appOrigin}${SIGNOUT_PATH}`, label: 'ログアウトする' },
+      });
+    }
     const refreshToken = parseCookies(request.headers).get(REFRESH_COOKIE);
     if (refreshToken) {
       await cognito.revoke(refreshToken);

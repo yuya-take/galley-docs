@@ -259,6 +259,39 @@ run "mfa_off" {
   }
 }
 
+run "least_privilege_and_cache" {
+  assert {
+    condition     = tolist(aws_cognito_user_pool_client.browser.explicit_auth_flows) == tolist(["ALLOW_REFRESH_TOKEN_AUTH"])
+    error_message = "ブラウザー用のクライアントは、InitiateAuth を直接呼ぶ流れを許さない"
+  }
+
+  assert {
+    condition     = !contains(flatten([for s in data.aws_iam_policy_document.app.statement : s.actions]), "s3:DeleteObject")
+    error_message = "アプリの Lambda は実体を消さない（物理削除は手元の galley purge）"
+  }
+
+  assert {
+    condition     = aws_cloudfront_cache_policy.docs.min_ttl == 31536000
+    error_message = "資料配信は private で返すので、CloudFront には最小 TTL でキャッシュさせる"
+  }
+
+  assert {
+    condition     = local.edge_config.refreshBeforeSeconds == 300 && aws_cognito_user_pool_client.browser.id_token_validity == 60
+    error_message = "既定の有効期間は 60 分で、残り 5 分で取り直す"
+  }
+}
+
+run "short_token_validity" {
+  variables {
+    token_validity_minutes = 5
+  }
+
+  assert {
+    condition     = aws_cognito_user_pool_client.browser.id_token_validity == 5 && local.edge_config.refreshBeforeSeconds == 75
+    error_message = "有効期間を短くしたら、取り直すまでの残り時間も短くする（毎回取り直さない）"
+  }
+}
+
 run "deletion_protection_off" {
   variables {
     deletion_protection = false

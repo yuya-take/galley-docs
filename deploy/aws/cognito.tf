@@ -75,13 +75,14 @@ resource "aws_cognito_user_pool_client" "browser" {
   supported_identity_providers         = ["COGNITO"]
   callback_urls                        = ["${local.app_origin}/_auth/callback"]
   logout_urls                          = ["${local.app_origin}/"]
-  explicit_auth_flows                  = ["ALLOW_USER_SRP_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]
+  # ログインはマネージドログインだけで行うので、InitiateAuth を直接呼ぶ流れ（SRP・パスワード）は許さない
+  explicit_auth_flows = ["ALLOW_REFRESH_TOKEN_AUTH"]
 
   prevent_user_existence_errors = "ENABLED"
   enable_token_revocation       = true
 
-  id_token_validity      = 60
-  access_token_validity  = 60
+  id_token_validity      = var.token_validity_minutes
+  access_token_validity  = var.token_validity_minutes
   refresh_token_validity = local.session_days
 
   token_validity_units {

@@ -13,6 +13,7 @@ const config = {
   blobPrefix: 'blobs',
   scopes: 'openid email profile',
   sessionMaxAgeSeconds: 2592000,
+  refreshBeforeSeconds: 300,
   docsCsp: "sandbox allow-scripts; default-src 'none'",
 };
 

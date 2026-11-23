@@ -81,8 +81,11 @@ function createVerifier({ issuer, clientId, fetch, now }) {
   /**
    * 有効な ID トークンなら中身（claims）を、そうでなければ null を返す。
    * JWKS を取れないときは ServiceUnavailableError を投げる。
+   *
+   * `allowExpired` を付けると、期限だけは見ない（署名・発行元・aud・種類は確かめる）。リフレッシュトークンで
+   * 取り直す前に、このプールが出したトークンを持っていることを確かめるために使う。
    */
-  async function verifyIdToken(token) {
+  async function verifyIdToken(token, { allowExpired = false } = {}) {
     if (typeof token !== 'string') {
       return null;
     }
@@ -103,7 +106,7 @@ function createVerifier({ issuer, clientId, fetch, now }) {
       claims.token_use !== 'id' ||
       claims.aud !== clientId ||
       typeof claims.exp !== 'number' ||
-      claims.exp <= nowSeconds ||
+      (!allowExpired && claims.exp <= nowSeconds) ||
       (typeof claims.iat === 'number' && claims.iat > nowSeconds + CLOCK_SKEW_SECONDS)
     ) {
       return null;

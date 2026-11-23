@@ -85,13 +85,16 @@ data "aws_iam_policy_document" "app" {
     resources = [aws_dynamodb_table.this.arn]
   }
 
+  # 実体を消すのは手元で動かす galley purge だけで、アプリ（Lambda）は消さないので DeleteObject は付けない
   statement {
     sid       = "BlobObjects"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${aws_s3_bucket.blobs.arn}/${local.blob_prefix}/*"]
   }
 
-  # アプリは書く前に HEAD で有無を見る。ListBucket が無いと、無いオブジェクトが 404 ではなく 403 になり、登録が失敗する
+  # アプリは書く前に HEAD で有無を見る。ListBucket が無いと、無いオブジェクトが 404 ではなく 403 になり、登録が失敗する。
+  # s3:prefix の条件で絞らないのは、HEAD の 404 を決めるときに条件付きの ListBucket が数えられるかがドキュメントに
+  # 無いため（絞ると登録が 403 で失敗しうる）。このバケットには資料の実体（blob_prefix の下）しか置かない
   statement {
     sid       = "BlobList"
     actions   = ["s3:ListBucket"]
