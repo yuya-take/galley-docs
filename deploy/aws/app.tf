@@ -70,7 +70,8 @@ data "aws_iam_policy_document" "app" {
     resources = ["${aws_cloudwatch_log_group.app.arn}:*"]
   }
 
-  # #76 の DynamoDB の adapter が使う操作
+  # DynamoDB の adapter（#76）が使う操作。トランザクションの中で条件だけを確かめる操作（ConditionCheck）や、
+  # BatchGetItem・BatchWriteItem・Scan は使っていない
   statement {
     sid = "DynamoDB"
     actions = [
@@ -80,7 +81,6 @@ data "aws_iam_policy_document" "app" {
       "dynamodb:DeleteItem",
       "dynamodb:Query",
       "dynamodb:TransactWriteItems",
-      "dynamodb:ConditionCheckItem",
     ]
     resources = [aws_dynamodb_table.this.arn]
   }
