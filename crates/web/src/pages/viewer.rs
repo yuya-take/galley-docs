@@ -244,8 +244,11 @@ async fn viewer_screen<'a>(
     let has_author = author::from_headers(request::headers(cx)).is_some();
     let shown = viewer.shown();
     let host = host(cx);
-    let frame_url = host.and_then(|host| app.viewer_url.revision_url(host, shown.id));
-    let download_url = host.and_then(|host| app.viewer_url.download_url(host, shown.id));
+    let frame_url = host.and_then(|host| app.viewer_url.blob_url(host, &shown.blob_hash));
+    let download_url = host.and_then(|host| {
+        app.viewer_url
+            .download_url(host, &shown.blob_hash, &viewer.document.slug)
+    });
     let title = viewer.document.title.as_str();
     let project = &viewer.project;
     let project_path = viewer.project_path();

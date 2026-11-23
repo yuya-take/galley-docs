@@ -28,8 +28,8 @@ impl FindDocument {
     }
 }
 
-/// ID から資料を探す（アーカイブしたものも返す）。資料配信が、版の HTML をダウンロードするときの
-/// ファイル名（資料の slug）を知るのに使う。
+/// ID から資料を探す（アーカイブしたものも返す）。資料配信が、前の形のダウンロードの URL
+/// （`/r/<revision_id>/download`）を振り向けるときに、ファイル名（資料の slug）を知るのに使う。
 pub struct FindDocumentById {
     documents: Arc<dyn DocumentRepository>,
 }
