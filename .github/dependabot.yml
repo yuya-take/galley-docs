@@ -17,3 +17,8 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      # toasty（0.11）が jiff 0.2 の型を使っているため、jiff だけ 1.x に上げると型が合わずビルドできない。
+      # toasty が jiff 1.x に対応したら外す
+      - dependency-name: jiff
+        update-types: ["version-update:semver-major"]
