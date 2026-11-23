@@ -4,7 +4,7 @@ use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
 use aws_sdk_dynamodb::{
     Client,
-    error::{BuildError, ProvideErrorMetadata, SdkError},
+    error::{BuildError, SdkError},
     operation::transact_write_items::TransactWriteItemsError,
     types::{AttributeValue, Delete, Put, TransactWriteItem, Update},
 };
@@ -61,6 +61,10 @@ impl Expression {
     /// 項目があること（読んだあとに消されていないこと）。
     pub fn exists() -> Self {
         Self::new(format!("attribute_exists({PK})"))
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     pub fn name(mut self, placeholder: &str, attribute: &str) -> Self {
@@ -135,13 +139,13 @@ impl Write {
     }
 }
 
+/// 式の中の属性名（`#name` → 属性名）。
+type Names = HashMap<String, String>;
+/// 式の中の値（`:value` → 値）。
+type Values = HashMap<String, AttributeValue>;
+
 /// 式の属性名と値を、DynamoDB に渡す形にする。空なら渡さない（空の指定は DynamoDB が断る）。
-fn placeholders(
-    expressions: &[&Expression],
-) -> (
-    Option<HashMap<String, String>>,
-    Option<HashMap<String, AttributeValue>>,
-) {
+fn placeholders(expressions: &[&Expression]) -> (Option<Names>, Option<Values>) {
     let mut names = HashMap::new();
     let mut values = HashMap::new();
     for expression in expressions {

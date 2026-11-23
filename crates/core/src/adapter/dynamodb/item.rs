@@ -36,9 +36,18 @@ pub(super) fn timestamp(at: Timestamp) -> AttributeValue {
     AttributeValue::S(format!("{at:.9}"))
 }
 
-/// 文字列の集合（`author_names`）。DynamoDB の集合は空にできないので、呼び出し側が空でないことを保つ。
-pub(super) fn string_set(values: impl IntoIterator<Item = String>) -> AttributeValue {
-    AttributeValue::Ss(values.into_iter().collect())
+/// 名前の集合（`author_names`）。キーを名前、値を `true` にしたマップで持つ。
+///
+/// 文字列の集合（SS）にしないのは、DynamoDB Local（3.3）が、日本語の文字列の集合にすでにある要素を
+/// `ADD` すると、以後の `ADD` を「Input collection contains duplicates」で断るため。マップなら
+/// `SET author_names.#name = :true` で1人ずつ足せる。
+pub(super) fn name_set(names: impl IntoIterator<Item = String>) -> AttributeValue {
+    AttributeValue::M(
+        names
+            .into_iter()
+            .map(|name| (name, AttributeValue::Bool(true)))
+            .collect(),
+    )
 }
 
 /// 保存済みの値を domain の型に読み直せなかったときのエラー。
@@ -119,10 +128,11 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| self.corrupted(attribute, "ありません"))
     }
 
-    pub fn string_set(&self, attribute: &str) -> Result<BTreeSet<String>, RepositoryError> {
+    /// 名前の集合（[`name_set`] で書いたマップのキー）。
+    pub fn name_set(&self, attribute: &str) -> Result<BTreeSet<String>, RepositoryError> {
         match self.item.get(attribute) {
             None | Some(AttributeValue::Null(_)) => Ok(BTreeSet::new()),
-            Some(AttributeValue::Ss(values)) => Ok(values.iter().cloned().collect()),
+            Some(AttributeValue::M(names)) => Ok(names.keys().cloned().collect()),
             Some(other) => Err(self.corrupted(attribute, format!("{other:?}"))),
         }
     }
@@ -232,7 +242,7 @@ pub(super) fn document_item(document: &Document, first: &Revision) -> Item {
             ),
             (
                 "author_names",
-                string_set([first.author_name.as_str().to_owned()]),
+                name_set([first.author_name.as_str().to_owned()]),
             ),
             ("created_at", timestamp(document.created_at)),
             ("updated_at", timestamp(document.updated_at)),
@@ -283,7 +293,7 @@ impl TryFrom<&Item> for StoredDocument {
                 .map_err(|e| r.corrupted("current_revision_number", e))?,
             current_message: r.parse("current_revision_message", RevisionMessage::parse)?,
             current_author: r.parse("current_revision_author_name", AuthorName::parse)?,
-            author_names: r.string_set("author_names")?,
+            author_names: r.name_set("author_names")?,
         })
     }
 }
