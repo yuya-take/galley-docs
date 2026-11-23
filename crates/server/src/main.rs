@@ -5,6 +5,7 @@
 
 mod app;
 mod cli;
+mod database;
 mod guard;
 mod mcp;
 mod purge;
@@ -21,7 +22,7 @@ use std::{
 use anyhow::Context as _;
 use axum::Router;
 use galley_core::{
-    adapter::{blob_store::ObjectStoreBlobStore, sqlite::SqliteDatabase},
+    adapter::blob_store::ObjectStoreBlobStore,
     app::{
         blob::ReadBlob,
         document::{
@@ -41,7 +42,7 @@ use tracing_subscriber::EnvFilter;
 
 const DEFAULT_APP_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_VIEWER_ADDR: &str = "0.0.0.0:8081";
-/// DB と資料の実体を置くディレクトリ。Docker イメージでは `/data` を指定する。
+/// DB（SQLite のとき）と資料の実体を置くディレクトリ。Docker イメージでは `/data` を指定する。
 const DEFAULT_DATA_DIR: &str = "data";
 /// 止める合図のあと、処理中のリクエストを待つ時間。MCP の SSE のように閉じない接続があっても、
 /// `docker stop` が SIGKILL を送る（既定 10 秒）より前に終わるようにする。
@@ -61,9 +62,13 @@ async fn main() -> anyhow::Result<()> {
     let data_dir =
         PathBuf::from(std::env::var("GALLEY_DATA_DIR").unwrap_or_else(|_| DEFAULT_DATA_DIR.into()));
     std::fs::create_dir_all(&data_dir)?;
-    let db_path = data_dir.join("galley.db");
-    let database = SqliteDatabase::open(&db_path).await?;
-    tracing::info!("database: {}", db_path.display());
+    let database_config = database::DatabaseConfig::from_env(&data_dir)?;
+    let database::Repositories {
+        projects,
+        documents,
+        revisions,
+    } = database::open(&database_config).await?;
+    tracing::info!("database: {database_config}");
     let blobs = Arc::new(open_blob_store(&data_dir)?);
 
     let app_addr = std::env::var("GALLEY_APP_ADDR").unwrap_or_else(|_| DEFAULT_APP_ADDR.into());
@@ -79,8 +84,6 @@ async fn main() -> anyhow::Result<()> {
     let html_size_limit = html_size_limit_from_env()?;
     tracing::info!("max html size: {html_size_limit}");
 
-    let projects = Arc::new(database.projects());
-    let documents = Arc::new(database.documents());
     let web = galley_web::service(Arc::new(galley_web::WebApp {
         list_projects: ListProjects::new(projects.clone()),
         find_project: FindProject::new(projects.clone()),
@@ -92,24 +95,21 @@ async fn main() -> anyhow::Result<()> {
         find_document: FindDocument::new(documents.clone()),
         archive_document: ArchiveDocument::new(documents.clone()),
         restore_document: RestoreDocument::new(documents.clone()),
-        list_revisions: ListRevisions::new(Arc::new(database.revisions())),
-        revert_to_revision: RevertToRevision::new(
-            documents.clone(),
-            Arc::new(database.revisions()),
-        ),
+        list_revisions: ListRevisions::new(revisions.clone()),
+        revert_to_revision: RevertToRevision::new(documents.clone(), revisions.clone()),
         create_document: CreateDocument::new(
-            projects,
+            projects.clone(),
             documents.clone(),
             blobs.clone(),
             html_size_limit,
         ),
         add_revision: AddRevision::new(
             documents.clone(),
-            Arc::new(database.revisions()),
+            revisions.clone(),
             blobs.clone(),
             html_size_limit,
         ),
-        find_document_by_file_name: FindDocumentByFileName::new(documents),
+        find_document_by_file_name: FindDocumentByFileName::new(documents.clone()),
         viewer_url,
         app_url: app_url.clone(),
         html_size_limit,
@@ -122,9 +122,9 @@ async fn main() -> anyhow::Result<()> {
         web,
         app::mcp_app(
             app::Ports {
-                projects: Arc::new(database.projects()),
-                documents: Arc::new(database.documents()),
-                revisions: Arc::new(database.revisions()),
+                projects,
+                documents: documents.clone(),
+                revisions: revisions.clone(),
                 blobs: blobs.clone(),
             },
             app_url,
@@ -137,8 +137,8 @@ async fn main() -> anyhow::Result<()> {
     let viewer = viewer::router(
         Arc::new(viewer::ViewerApp {
             read_blob: ReadBlob::new(blobs),
-            find_revision: FindRevisionById::new(Arc::new(database.revisions())),
-            find_document: FindDocumentById::new(Arc::new(database.documents())),
+            find_revision: FindRevisionById::new(revisions),
+            find_document: FindDocumentById::new(documents),
         }),
         allowed_hosts,
     );
