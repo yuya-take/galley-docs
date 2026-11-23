@@ -14,7 +14,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
 
 - **作らないもの**: Route 53 のホストゾーン、state を置く場所、Cognito の動的なクライアント登録の設定（AWS プロバイダーが未対応。手順の 6 でコンソールから入れる）
 - **費用**: 10 人・月 20 日の想定で月 $0.25 ほど（PR #75 の「月額の目安」）。時間課金のサービスは置きません
-- **ホスト名**: `app_domain`（例: `galley.example.com`）が画面と MCP、`docs.<app_domain>` が資料配信です。ログインの Cookie は `app_domain` とその下のすべてに届くので、**`app_domain` の下には Galley のホストだけを置いてください**
+- **ホスト名**: `app_domain`（例: `galley.example.com`）が画面と MCP、`docs.<app_domain>` が資料配信です。ログインの Cookie は `Domain=<app_domain>` で出すので、`app_domain` とその下のすべてのホストに届きます。**`app_domain` の下には Galley のホストだけを置いてください**。信頼できない別のサービスや、乗っ取られうるサブドメイン（消したサービスを指したままの CNAME など）を置くと、そこからログインの Cookie を読まれたり、偽の Cookie を押し付けられたり（cookie tossing）します
 
 ### 置いてあるもの
 
@@ -63,6 +63,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
    | `image_tag` | なし | ECR に複製したイメージのタグ。手順の 2 までは未設定でよい |
    | `route53_zone_id` | なし | Route 53 のホストゾーンの ID。渡せばレコードまで作る |
    | `mfa_configuration` | `ON` | 全員に認証アプリ（TOTP）を求める（初回のログインで設定させる）。インターネットに出す構成なので既定で求める。`OFF` にするとパスワードだけになる |
+   | `token_validity_minutes` | `60` | ブラウザーのログインの ID トークンの有効期間（分、5〜1440）。利用者を止めても、持っている ID トークンはこの時間まで使えるので、すぐに止めたいなら短くする（「取り消しの遅れ」） |
    | `deletion_protection` | `true` | ユーザープールと DynamoDB の削除保護。`true` のあいだは、中身のある S3 のバケットも消さない |
    | `noncurrent_version_retention_days` | `30` | S3 で削除・上書きされた資料の実体（古い版）を残す日数（「物理削除のあと」） |
    | `region` | `ap-northeast-1` | Lambda・API Gateway・DynamoDB・S3・Cognito のリージョン |
@@ -134,6 +135,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
    - オープンな登録では、誰でもクライアントを登録できます。ただし登録しただけではトークンは取れず、Cognito の利用者としてログインする必要があります
    - 登録されたクライアントは、ユーザープールのアプリクライアントの上限（既定 1,000）に数えます。増えすぎたら、コンソールのアプリクライアントの一覧から使われていないものを消してください
    - 登録のエンドポイント（`/oauth2/register`）への大量の登録を防ぐには、AWS WAF のレートベースのルールをマネージドログインに付けられます（月額の費用がかかるので、この Terraform には入れていません）
+   - 動的に登録されたクライアントには、Cognito の既定の認証の流れ（SRP など）と、既定の有効期間（アクセストークン 60 分）が付きます。変えるときは、コンソールのアプリクライアントの設定で 1 つずつ変えます
 
 7. **利用者を作る**。管理者が作り、招待のメール（仮のパスワード）が届きます。利用者が自分で登録することはできません。最初のログインでパスワードを変え、MFA が `ON`（既定）なら認証アプリ（Google Authenticator など）を登録します
 
@@ -146,7 +148,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
    ```
 
    - Cognito の既定のメールは 1 日 50 通までです。それより多く招待するなら、Amazon SES をつなぎます
-   - 辞めた人は `admin-disable-user` で止め、`admin-user-global-sign-out` でリフレッシュトークンを取り消します。ブラウザーに残った ID トークンは、期限（最大 1 時間）までは使えます
+   - 辞めた人は `admin-disable-user` で止め、`admin-user-global-sign-out` でリフレッシュトークンを取り消します。ブラウザーに残った ID トークンと MCP のアクセストークンは、期限までは使えます（下の「取り消しの遅れ」）
 
 8. **MCP クライアントを設定する**。設定は URL と更新者名だけで、トークンは配りません。初めて使うときにブラウザーが開き、Cognito にログインします
 
@@ -157,17 +159,32 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
 
    Claude Code では、`/mcp` でサーバーを選んで認証します。AWS では `MCP_TOKEN` を使いません（`/mcp` は API Gateway の JWT オーソライザーが Cognito のアクセストークンを確かめます）。日本語の名前は、Docker の構成と同じく UTF-8 をパーセントエンコードした値で入れます（上の例は「佐藤」。リポジトリの README の「AI から登録する（MCP）」）。画面の「AI から登録する」に、ブラウザに保存した名前をエンコードしたコマンドが出ます。
 
-ログアウトは `https://<app_domain>/_auth/signout` です（Cookie を消し、リフレッシュトークンを取り消して、Cognito のログアウトに回します）。
+ログアウトは `https://<app_domain>/_auth/signout` です（Cookie を消し、リフレッシュトークンを取り消して、Cognito のログアウトに回します）。アドレスバーに入れるか画面のリンクから開いたときだけすぐにログアウトし、ほかのサイトや資料の iframe から移動させられたとき（`Sec-Fetch-Site` が `same-origin`・`none` 以外）は、「ログアウトする」のリンクを出して押してもらいます。
+
+ログインの画面で、正しいパスワードでもログインできないときは、`cognito.tf` のブラウザー用のクライアントの `explicit_auth_flows` に `ALLOW_USER_SRP_AUTH` を足してください。マネージドログインだけでログインするので外していますが、マネージドログインがこの設定に左右されるかはドキュメントに書かれていません。
 
 ### ログインのしくみ
 
 - **画面と資料配信**: 2 つの CloudFront の viewer-request に同じ Lambda@Edge を付け、Cookie の ID トークン（RS256）を確かめます。無ければ Cognito のマネージドログインに回し（認可コード＋PKCE、公開クライアント）、`/_auth/callback` でトークンに換えて Cookie を出します。期限が近づくと、リフレッシュトークンで取り直します（Cookie を出し直すために、同じ URL に 307 で戻します）
-- **Cookie**: `galley_id_token`（ID トークン）と `galley_refresh_token`（リフレッシュトークン）。`Domain=<app_domain>; Path=/; Secure; HttpOnly; SameSite=Lax`、期限は 30 日です。アプリには渡しません（CloudFront がアプリに渡す Cookie は `galley_author` だけ）
+- **Cookie**: `galley_id_token`（ID トークン）と `galley_refresh_token`（リフレッシュトークン）。`Domain=<app_domain>; Path=/; Secure; HttpOnly; SameSite=Lax`、期限は 30 日です。アプリには渡しません（CloudFront がアプリに渡す Cookie は `galley_author` だけ）。ログインの途中の PKCE の値は、`galley_login_<state>`（`Path=/_auth/callback`、10 分）に入れ、戻り先でまとめて消します
+- **取り直し**: リフレッシュトークンで Cognito を呼ぶのは、リフレッシュトークンの形（文字の種類と長さ）が合い、このプールが出した ID トークン（期限切れでよい。署名は確かめる）も持っているときだけです。偽の Cookie を付けた匿名のリクエストで、Cognito のトークンのエンドポイントを叩かせないため
 - **iframe の中**: 資料ビューアの iframe の読み込みでログインが切れていたら、ログインの画面には回さず、「ログインし直してください」の短いページを返します。画面を開き直すとログインの画面に移ります
 - **Cognito に届かないとき**: 公開鍵（JWKS）やトークンのエンドポイントに届かなければ、ログインの画面には回さず 503 を返します（回しても同じ理由で失敗するため）。ID トークンがまだ期限内なら、取り直せなくてもそのまま通します。公開鍵は関数の中に持ち続け、知らない鍵（kid）のトークンが来たときだけ取り直します（1 分に 1 回まで）
-- **資料配信**: ログインを確かめたあと、`/b/<hash>` を S3 のキー（`<prefix>/ab/cd/<hash>.html`）に書き換えます。`?download=<slug>` は資料の slug の規則に合うときだけ受け付け、origin-response で `Content-Disposition` を付けます。CSP（sandbox）・nosniff・no-referrer は応答ヘッダーポリシーで付け、関数が自分で返す応答には関数でも付けます
+- **資料配信**: ログインを確かめたあと、`/b/<hash>` を S3 のキー（`<prefix>/ab/cd/<hash>.html`）に書き換えます。`?download=<slug>` は資料の slug の規則に合うときだけ受け付け、origin-response で `Content-Disposition` を付けます。CSP（sandbox）・nosniff・no-referrer は応答ヘッダーポリシーで付け、関数が自分で返す応答には関数でも付けます。ブラウザーへの応答は `Cache-Control: private, max-age=31536000, immutable` にして、途中のキャッシュ（会社のプロキシなど）には置かせません。CloudFront には、キャッシュポリシーの最小 TTL（1 年）でキャッシュさせます
 - **MCP**: `/mcp` と `/.well-known/oauth-protected-resource`・`/.well-known/oauth-protected-resource/mcp` には Lambda@Edge を付けません。`/mcp` は API Gateway の JWT オーソライザーが、発行元・`aud`（`https://<app_domain>/mcp`）・スコープ（`https://<app_domain>/mcp/access`）を確かめます
 - **CloudFront を通らないアクセス**: API Gateway のカスタムドメインの向き先に直接来たリクエストは、CloudFront が付ける秘密のヘッダー（`X-Origin-Verify`）が無いので、Lambda オーソライザーが断ります。既定の execute-api のエンドポイントは無効です
+
+### 取り消しの遅れ
+
+ID トークンとアクセストークンは、署名と期限だけで確かめます（Cognito に毎回問い合わせない）。そのため、利用者を止めたり消したり、ログアウトしたりしても、すでに持っているトークンは期限まで使えます。
+
+- **ブラウザー**: ID トークンは `token_validity_minutes`（既定 60 分）まで使えます。リフレッシュトークンが取り消されて取り直せなくても、期限内の ID トークンは通します
+- **MCP**: アクセストークンは、動的に登録されたクライアントの有効期間（既定 60 分）まで使えます
+- **すぐに止めたいとき**: 有効期間を短くします（最短 5 分。ブラウザーは `token_validity_minutes`、MCP のクライアントはコンソールのアプリクライアントの設定）。短くすると、そのぶん Cognito への取り直しが増えます
+
+### 大量のリクエストへの備え
+
+API Gateway にはスロットリング（`api_throttling_rate_limit`・`api_throttling_burst_limit`）を入れていますが、CloudFront と Lambda@Edge には上限を設けていません。ログインしていないリクエストも Lambda@Edge は動くので、大量に送られると Lambda@Edge の費用が増えます。気になるときは、AWS WAF の Web ACL（レートベースのルール）を 2 つの CloudFront に付けられます（Web ACL とルールの月額と、リクエストごとの費用がかかるので、この Terraform には入れていません）。
 
 ### 実際の AWS で確かめる
 
