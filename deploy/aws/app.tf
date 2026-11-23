@@ -70,8 +70,9 @@ data "aws_iam_policy_document" "app" {
     resources = ["${aws_cloudwatch_log_group.app.arn}:*"]
   }
 
-  # DynamoDB の adapter（#76）が使う操作。トランザクションの中で条件だけを確かめる操作（ConditionCheck）や、
-  # BatchGetItem・BatchWriteItem・Scan は使っていない
+  # DynamoDB の adapter（#76）が使う操作（docs/design.md の「DynamoDB のテーブル」）。TransactWriteItems は、
+  # 中の書き込みのそれぞれ（PutItem・UpdateItem・DeleteItem）の権限で動く。トランザクションの中で条件だけを
+  # 確かめる操作（ConditionCheckItem）や、BatchGetItem・BatchWriteItem・Scan は使っていない
   statement {
     sid = "DynamoDB"
     actions = [
@@ -80,7 +81,6 @@ data "aws_iam_policy_document" "app" {
       "dynamodb:UpdateItem",
       "dynamodb:DeleteItem",
       "dynamodb:Query",
-      "dynamodb:TransactWriteItems",
     ]
     resources = [aws_dynamodb_table.this.arn]
   }
