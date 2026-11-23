@@ -44,13 +44,11 @@ pub async fn document_preview(cx: &Cx, key: String) -> Result<impl View> {
     let path = format!("/{}/{}", project.slug.as_str(), document.slug.as_str());
     let title = document.title.as_str().to_owned();
     // 現在版は常に一番新しい版
-    let number = revisions
-        .first()
-        .map_or(RevisionNumber::FIRST, |revision| revision.number);
-    let frame_url = host(cx).and_then(|host| {
-        app.viewer_url
-            .revision_url(host, document.current_revision_id)
-    });
+    let current = revisions.first();
+    let number = current.map_or(RevisionNumber::FIRST, |revision| revision.number);
+    let frame_url = host(cx)
+        .zip(current)
+        .and_then(|(host, revision)| app.viewer_url.blob_url(host, &revision.blob_hash));
     let now = date::now();
     let time_zone = now.time_zone().clone();
     // 「アーカイブ」の確認を出している資料（`<プロジェクト>/<資料>`。別の行を選んだら隠れる）
