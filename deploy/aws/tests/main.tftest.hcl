@@ -1,5 +1,6 @@
 # AWS に触らずに、モックのプロバイダーで apply して、式と条件を確かめる（terraform test / tofu test）。
 # 2 つのプロバイダー（既定と us-east-1）に同じモックを置く（mock_provider の source は OpenTofu との違いを避けて使わない）。
+# OpenTofu は computed でない属性をモックで上書きできないので、上書きするのは computed の属性だけにする。
 
 mock_provider "aws" {
   mock_data "aws_caller_identity" {
@@ -10,9 +11,6 @@ mock_provider "aws" {
   }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
-  }
-  mock_data "aws_cloudfront_cache_policy" {
-    defaults = { id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" }
   }
   mock_resource "aws_cognito_user_pool" {
     defaults = { id = "ap-northeast-1_MOCK", arn = "arn:aws:cognito-idp:ap-northeast-1:123456789012:userpool/ap-northeast-1_MOCK" }
@@ -67,9 +65,6 @@ mock_provider "aws" {
   }
   mock_data "aws_iam_policy_document" {
     defaults = { json = "{}" }
-  }
-  mock_data "aws_cloudfront_cache_policy" {
-    defaults = { id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" }
   }
   mock_resource "aws_cognito_user_pool" {
     defaults = { id = "ap-northeast-1_MOCK", arn = "arn:aws:cognito-idp:ap-northeast-1:123456789012:userpool/ap-northeast-1_MOCK" }
@@ -246,14 +241,21 @@ run "edge_config" {
   }
 }
 
-run "mfa_on" {
+run "mfa_on_by_default" {
+  assert {
+    condition     = aws_cognito_user_pool.this.mfa_configuration == "ON" && aws_cognito_user_pool.this.software_token_mfa_configuration[0].enabled
+    error_message = "既定で MFA を ON にし、認証アプリ（TOTP）を使う"
+  }
+}
+
+run "mfa_off" {
   variables {
-    mfa_configuration = "ON"
+    mfa_configuration = "OFF"
   }
 
   assert {
-    condition     = aws_cognito_user_pool.this.mfa_configuration == "ON" && aws_cognito_user_pool.this.software_token_mfa_configuration[0].enabled
-    error_message = "MFA を ON にしたら、認証アプリ（TOTP）を使う"
+    condition     = aws_cognito_user_pool.this.mfa_configuration == "OFF" && length(aws_cognito_user_pool.this.software_token_mfa_configuration) == 0
+    error_message = "MFA を OFF にしたら、認証アプリの設定も置かない"
   }
 }
 
