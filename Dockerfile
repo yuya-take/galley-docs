@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1
 
+# ---- Lambda Web Adapter ----
+# AWS Lambda で HTTP サーバーのまま動かすための拡張（deploy/aws/README.md）。
+# Lambda ではすべてのリクエストを中継するので、タグに加えてダイジェスト（マルチアーキテクチャのインデックス）で固定する
+FROM public.ecr.aws/awsguru/aws-lambda-adapter:1.1.0@sha256:17cfd08eff1dfea3f6a9a1e9c65fdac80aa4919b6085e746615530f43f57d2f1 AS lambda-adapter
+
 # ---- ビルド ----
 # Rust の版は rust-toolchain.toml と揃える（ずれても rustup が rust-toolchain.toml の版を入れる）
 FROM rust:1.98.1-slim-trixie AS builder
@@ -43,6 +48,12 @@ ENV GALLEY_DATA_DIR=/data \
     GALLEY_VIEWER_ADDR=0.0.0.0:8081
 # 管理用のサブコマンドを docker exec galley galley purge ... で呼べるようにする（シェルが無いので PATH で探させる）
 ENV PATH=/app:${PATH}
+
+# Lambda Web Adapter。/opt/extensions は Lambda の実行環境だけが読むので、docker run では動かない。
+# 準備の確認は TCP で行う（HTTP だと Host が 127.0.0.1 になり、ALLOWED_HOSTS の検査で断られるため）
+COPY --from=lambda-adapter /lambda-adapter /opt/extensions/lambda-adapter
+ENV AWS_LWA_PORT=8080 \
+    AWS_LWA_READINESS_CHECK_PROTOCOL=tcp
 
 # SQLite（galley.db）と資料の実体（blobs/）
 VOLUME ["/data"]
