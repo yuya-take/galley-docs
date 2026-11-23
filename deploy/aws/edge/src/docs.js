@@ -53,12 +53,12 @@ function setHeader(response, name, value) {
 /**
  * S3 の応答を資料配信の応答に整える（origin-response）。キャッシュに入る前に 1 回だけ動く。
  *
- * - 200: 中身で決まる URL なので長くキャッシュさせる。`download` があれば `Content-Disposition` を付ける
+ * - 200・206（Range）: 中身で決まる URL なので長くキャッシュさせる。`download` があれば `Content-Disposition` を付ける
  * - 404 など: S3 の XML のエラーを、アプリの資料配信と同じ素のテキストに置き換え、キャッシュさせない
  */
 function finishBlobResponse(request, response, securityHeaders) {
   const status = Number(response.status);
-  if (status === 200) {
+  if (status === 200 || status === 206) {
     setHeader(response, 'cache-control', CACHE_IMMUTABLE);
     const download = new URLSearchParams(request.querystring).get('download');
     if (isDocumentSlug(download)) {

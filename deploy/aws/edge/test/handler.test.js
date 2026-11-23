@@ -353,6 +353,13 @@ test('origin-response: 200 には長いキャッシュと、download があれ�
 
   const download = await s.handler(originResponse({ uri, querystring: 'download=keikaku', status: 200 }));
   assert.equal(header(download, 'content-disposition')[0], 'attachment; filename="keikaku.html"');
+
+  const range = await s.handler(originResponse({ uri, querystring: 'download=keikaku', status: 206 }));
+  assert.equal(header(range, 'content-disposition')[0], 'attachment; filename="keikaku.html"');
+
+  const notModified = await s.handler(originResponse({ uri, status: 304 }));
+  assert.equal(notModified.status, '304');
+  assert.equal(notModified.body, undefined);
 });
 
 test('origin-response: S3 のエラーを素のテキストにし、キャッシュさせない', async () => {

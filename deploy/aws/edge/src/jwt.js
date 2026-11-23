@@ -6,8 +6,11 @@ const { ServiceUnavailableError } = require('./errors');
 
 /** 知らない kid のトークンが来ても、JWKS を取り直すのはこの間隔に 1 回まで（偽のトークンで Cognito を叩かせない）。 */
 const JWKS_MIN_REFETCH_MS = 60_000;
-/** Cognito を呼ぶときのタイムアウト。関数のタイムアウト（5 秒）に収める。 */
-const FETCH_TIMEOUT_MS = 3_000;
+/**
+ * Cognito を呼ぶときのタイムアウト。戻り先ではトークンの交換と JWKS の取得が続くことがあるので、
+ * 2 回分でも関数のタイムアウト（5 秒）に収める。
+ */
+const FETCH_TIMEOUT_MS = 2_000;
 /** `iat` が未来を指していても許す幅（時計のずれ）。 */
 const CLOCK_SKEW_SECONDS = 60;
 
