@@ -23,6 +23,7 @@ use axum::Router;
 use galley_core::{
     adapter::{blob_store::ObjectStoreBlobStore, sqlite::SqliteDatabase},
     app::{
+        blob::ReadBlob,
         document::{
             ArchiveDocument, CreateDocument, FindDocument, FindDocumentByFileName,
             FindDocumentById, ListDocuments, RestoreDocument,
@@ -30,7 +31,7 @@ use galley_core::{
         project::{
             ArchiveProject, CreateProject, FindProject, ListProjects, RestoreProject, UpdateProject,
         },
-        revision::{AddRevision, ListRevisions, ReadRevisionContent, RevertToRevision},
+        revision::{AddRevision, FindRevisionById, ListRevisions, RevertToRevision},
     },
     domain::upload::HtmlSizeLimit,
 };
@@ -135,7 +136,8 @@ async fn main() -> anyhow::Result<()> {
     );
     let viewer = viewer::router(
         Arc::new(viewer::ViewerApp {
-            read_revision: ReadRevisionContent::new(Arc::new(database.revisions()), blobs),
+            read_blob: ReadBlob::new(blobs),
+            find_revision: FindRevisionById::new(Arc::new(database.revisions())),
             find_document: FindDocumentById::new(Arc::new(database.documents())),
         }),
         allowed_hosts,
