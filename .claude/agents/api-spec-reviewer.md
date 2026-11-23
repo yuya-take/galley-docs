@@ -27,7 +27,7 @@ Galley が外に出しているインターフェースが、既存パターン�
   - `/`、`/:project`、`/:project/:doc`、`/:project/:doc/v/:number`、`/:project/:doc/history`、`/:project/settings`、`/archive`、`/connect`
 - 版を省略した URL は常に最新版、`/v/:number` は特定の版を指す（共有したリンクの意味がぶれない）
 - 新しいトップレベルのパスを足したら、プロジェクト slug の予約語にも追加しているか
-- 資料配信は `/r/:revision_id` のみ
+- 資料配信は `/b/:hash`（`?download=:slug` でダウンロード）のみ。前の形の `/r/:revision_id`・`/r/:revision_id/download` は `/b/:hash` へのリダイレクトとしてだけ残す
 
 ### 2. 状態を変える HTTP ルート
 - メソッドは POST / PUT / PATCH / DELETE（GET で状態を変えない）

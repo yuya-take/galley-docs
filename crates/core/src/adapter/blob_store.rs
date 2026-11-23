@@ -2,17 +2,21 @@
 //!
 //! 既定はローカルのディレクトリ。`s3://` の URL を渡すと S3 互換のストレージに置く。
 //! 置き場所は [`BlobHash::storage_key`] で決まり、ハッシュから作るのでディレクトリの外は指さない。
+//!
+//! S3 に書くときは `Content-Type: text/html; charset=utf-8` を付ける。AWS の構成では CloudFront が
+//! S3 から直接配るので、S3 のオブジェクトの Content-Type がそのまま応答に出るため。
 
 use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use object_store::{
-    ObjectStore, ObjectStoreExt, PutPayload, aws::AmazonS3Builder, local::LocalFileSystem,
-    memory::InMemory, path::Path as StorePath, prefix::PrefixStore,
+    Attribute, Attributes, ObjectStore, ObjectStoreExt, PutOptions, PutPayload,
+    aws::AmazonS3Builder, local::LocalFileSystem, memory::InMemory, path::Path as StorePath,
+    prefix::PrefixStore,
 };
 
 use crate::domain::{
-    blob::{BlobContent, BlobHash, BlobStore},
+    blob::{BlobContent, BlobHash, BlobStore, HTML_CONTENT_TYPE},
     error::StorageError,
 };
 
@@ -30,6 +34,8 @@ pub enum OpenBlobStoreError {
 #[derive(Debug, Clone)]
 pub struct ObjectStoreBlobStore {
     store: Arc<dyn ObjectStore>,
+    /// 書くときにオブジェクトに付ける属性（Content-Type）。ローカルのディレクトリは属性を持てないので空。
+    attributes: Attributes,
 }
 
 impl ObjectStoreBlobStore {
@@ -37,8 +43,10 @@ impl ObjectStoreBlobStore {
     pub fn local(root: &Path) -> Result<Self, OpenBlobStoreError> {
         std::fs::create_dir_all(root)?;
         let store = LocalFileSystem::new_with_prefix(root)?;
+        // LocalFileSystem は属性を付けた書き込みを受け付けない（NotImplemented になる）
         Ok(Self {
             store: Arc::new(store),
+            attributes: Attributes::new(),
         })
     }
 
@@ -57,15 +65,24 @@ impl ObjectStoreBlobStore {
         } else {
             Arc::new(PrefixStore::new(s3, prefix))
         };
-        Ok(Self { store })
+        Ok(Self {
+            store,
+            attributes: html_attributes(),
+        })
     }
 
-    /// メモリ上に置く。テスト用。
+    /// メモリ上に置く。テスト用。S3 と同じく Content-Type を付ける。
     pub fn in_memory() -> Self {
         Self {
             store: Arc::new(InMemory::new()),
+            attributes: html_attributes(),
         }
     }
+}
+
+/// S3 などのオブジェクトに付ける属性。
+fn html_attributes() -> Attributes {
+    Attributes::from_iter([(Attribute::ContentType, HTML_CONTENT_TYPE)])
 }
 
 /// `s3://<バケット>/<プレフィックス>` をバケットとプレフィックスに分ける。
@@ -98,8 +115,12 @@ impl BlobStore for ObjectStoreBlobStore {
             Err(err) => return Err(backend_error(err)),
         }
         let payload = PutPayload::from(content.as_bytes().to_vec());
+        let options = PutOptions {
+            attributes: self.attributes.clone(),
+            ..PutOptions::default()
+        };
         self.store
-            .put(&location, payload)
+            .put_opts(&location, payload, options)
             .await
             .map_err(backend_error)?;
         Ok(())
@@ -130,7 +151,46 @@ impl BlobStore for ObjectStoreBlobStore {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use super::*;
+
+    /// オブジェクトに付いた Content-Type。
+    async fn content_type(
+        store: &ObjectStoreBlobStore,
+        hash: &BlobHash,
+    ) -> Result<Option<String>, Box<dyn Error>> {
+        let result = store.store.get(&location(hash)).await?;
+        Ok(result
+            .attributes
+            .get(&Attribute::ContentType)
+            .map(|value| value.to_string()))
+    }
+
+    #[tokio::test]
+    async fn object_store_put_attaches_html_content_type() -> Result<(), Box<dyn Error>> {
+        let store = ObjectStoreBlobStore::in_memory();
+        let content = BlobContent::new(b"<!doctype html><p>a</p>".to_vec());
+        store.put(&content).await?;
+        assert_eq!(
+            content_type(&store, content.hash()).await?.as_deref(),
+            Some("text/html; charset=utf-8")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn s3_store_attaches_html_content_type() -> Result<(), Box<dyn Error>> {
+        let store = ObjectStoreBlobStore::s3("s3://galley/blobs")?;
+        assert_eq!(
+            store
+                .attributes
+                .get(&Attribute::ContentType)
+                .map(|v| v.to_string()),
+            Some(HTML_CONTENT_TYPE.to_owned())
+        );
+        Ok(())
+    }
 
     #[test]
     fn parse_s3_url_splits_bucket_and_prefix() {

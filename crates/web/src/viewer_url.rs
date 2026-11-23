@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use galley_core::domain::shared::RevisionId;
+use galley_core::domain::{blob::BlobHash, document::DocumentSlug};
 
 use crate::host::{base_url, hostname};
 
@@ -39,15 +39,27 @@ impl ViewerUrl {
         }
     }
 
-    /// 版の HTML の URL。`app_host` はアプリへのリクエストの Host ヘッダー（`SameHost` のときに使う）。
-    /// Host ヘッダーがホスト名として正しくなければ `None`。
-    pub fn revision_url(&self, app_host: &str, id: RevisionId) -> Option<String> {
-        Some(format!("{}/r/{id}", self.base(app_host)?))
+    /// 版の HTML の URL（`/b/<実体のハッシュ>`）。`app_host` はアプリへのリクエストの Host ヘッダー
+    /// （`SameHost` のときに使う）。Host ヘッダーがホスト名として正しくなければ `None`。
+    ///
+    /// URL は中身だけで決まるので、AWS の構成では CloudFront が S3 から同じ URL で配る。
+    pub fn blob_url(&self, app_host: &str, hash: &BlobHash) -> Option<String> {
+        Some(format!("{}/b/{hash}", self.base(app_host)?))
     }
 
-    /// 版の HTML をファイルとしてダウンロードする URL（資料ビューアの「HTML をダウンロード」）。
-    pub fn download_url(&self, app_host: &str, id: RevisionId) -> Option<String> {
-        Some(format!("{}/r/{id}/download", self.base(app_host)?))
+    /// 版の HTML をファイル（`<資料の slug>.html`）としてダウンロードする URL
+    /// （`/b/<実体のハッシュ>?download=<資料の slug>`。資料ビューアの「HTML をダウンロード」）。
+    /// slug は英小文字・数字・ハイフンだけなので、そのまま問い合わせ文字列に入れられる。
+    pub fn download_url(
+        &self,
+        app_host: &str,
+        hash: &BlobHash,
+        slug: &DocumentSlug,
+    ) -> Option<String> {
+        Some(format!(
+            "{}?download={slug}",
+            self.blob_url(app_host, hash)?
+        ))
     }
 
     fn base(&self, app_host: &str) -> Option<String> {
@@ -71,33 +83,39 @@ impl fmt::Display for ViewerUrl {
 mod tests {
     use super::*;
 
-    fn id() -> RevisionId {
-        RevisionId::generate()
+    fn hash() -> BlobHash {
+        BlobHash::of(b"<!doctype html>")
+    }
+
+    fn slug() -> DocumentSlug {
+        DocumentSlug::generated(0x3f9a_1c2e)
     }
 
     #[test]
     fn same_host_uses_viewer_port() {
         let url = ViewerUrl::SameHost { port: 8081 };
-        let id = id();
+        let hash = hash();
         assert_eq!(
-            url.revision_url("galley.internal:8080", id),
-            Some(format!("http://galley.internal:8081/r/{id}"))
+            url.blob_url("galley.internal:8080", &hash),
+            Some(format!("http://galley.internal:8081/b/{hash}"))
         );
         assert_eq!(
-            url.revision_url("192.168.1.10", id),
-            Some(format!("http://192.168.1.10:8081/r/{id}"))
+            url.blob_url("192.168.1.10", &hash),
+            Some(format!("http://192.168.1.10:8081/b/{hash}"))
         );
         assert_eq!(
-            url.revision_url("[::1]:8080", id),
-            Some(format!("http://[::1]:8081/r/{id}"))
+            url.blob_url("[::1]:8080", &hash),
+            Some(format!("http://[::1]:8081/b/{hash}"))
         );
         assert_eq!(
-            url.revision_url("Galley.Internal:8080", id),
-            Some(format!("http://galley.internal:8081/r/{id}"))
+            url.blob_url("Galley.Internal:8080", &hash),
+            Some(format!("http://galley.internal:8081/b/{hash}"))
         );
         assert_eq!(
-            url.download_url("galley.internal:8080", id),
-            Some(format!("http://galley.internal:8081/r/{id}/download"))
+            url.download_url("galley.internal:8080", &hash, &slug()),
+            Some(format!(
+                "http://galley.internal:8081/b/{hash}?download=doc-3f9a1c2e"
+            ))
         );
     }
 
@@ -105,8 +123,8 @@ mod tests {
     fn same_host_rejects_odd_host_headers() {
         let url = ViewerUrl::SameHost { port: 8081 };
         for host in ["", "evil.com/x", "a b", "\"><script>", "[::1"] {
-            assert_eq!(url.revision_url(host, id()), None, "{host:?}");
-            assert_eq!(url.download_url(host, id()), None, "{host:?}");
+            assert_eq!(url.blob_url(host, &hash()), None, "{host:?}");
+            assert_eq!(url.download_url(host, &hash(), &slug()), None, "{host:?}");
         }
     }
 
@@ -119,10 +137,10 @@ mod tests {
                 "https://galley-docs.example.com".to_owned()
             ))
         );
-        let id = id();
+        let hash = hash();
         assert_eq!(
-            url.ok().and_then(|u| u.revision_url("ignored", id)),
-            Some(format!("https://galley-docs.example.com/r/{id}"))
+            url.ok().and_then(|u| u.blob_url("ignored", &hash)),
+            Some(format!("https://galley-docs.example.com/b/{hash}"))
         );
         assert!(ViewerUrl::parse("http://localhost:18081").is_ok());
         assert_eq!(
