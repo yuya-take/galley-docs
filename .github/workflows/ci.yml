@@ -44,6 +44,12 @@ jobs:
   test:
     name: test
     runs-on: ubuntu-latest
+    services:
+      # DynamoDB の adapter の結合テスト用（メモリ上で動く）
+      dynamodb:
+        image: amazon/dynamodb-local:3.3.2
+        ports:
+          - 8000:8000
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -53,6 +59,11 @@ jobs:
         with:
           save-if: ${{ github.event_name == 'push' }}
       - run: cargo test --workspace --locked
+      # 同じ結合テストを DynamoDB Local でも流す（crates/core/tests/common）
+      - name: cargo test（DynamoDB Local）
+        run: cargo test -p galley-core --locked --test repository --test revision --test purge --test dynamodb
+        env:
+          GALLEY_TEST_DYNAMODB_ENDPOINT: http://localhost:8000
 
   architecture:
     name: architecture
