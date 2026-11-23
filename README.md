@@ -136,8 +136,11 @@ Claude Code などの MCP クライアントから、資料の一覧・取得・
 
 ```bash
 claude mcp add --transport http galley http://galley.example.com:8080/mcp \
-  --header "X-Author-Name: 佐藤"
+  --header "X-Author-Name: %E4%BD%90%E8%97%A4"
 ```
+
+- 日本語の名前は、UTF-8 をパーセントエンコードした値で入れます（上の例は「佐藤」）。Claude Code はヘッダーに ASCII 以外の文字を入れられず、`Header 'X-Author-Name' has invalid value` で止まるためです。画面の「AI から登録する」（`/connect`）には、ブラウザに保存した名前をエンコードしたコマンドが出ます。ASCII だけの名前（`X-Author-Name: Sato`）はそのままで構いません
+- 生の UTF-8 の値（ASCII 以外を送れるクライアント）も、そのまま読めます
 
 - サーバーに `MCP_TOKEN` を設定したときは、`--header "Authorization: Bearer <トークン>"` も付けます
 - ほかの PC から使うときは、サーバーの `ALLOWED_HOSTS` にホスト名（上の例なら `galley.example.com`）を入れます
