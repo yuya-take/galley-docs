@@ -59,9 +59,10 @@ jobs:
         with:
           save-if: ${{ github.event_name == 'push' }}
       - run: cargo test --workspace --locked
-      # 同じ結合テストを DynamoDB Local でも流す（crates/core/tests/common）
+      # 同じ結合テストを DynamoDB Local でも流す（crates/core/tests/common）。--workspace のままにして、
+      # 上の手順と依存の feature をそろえる（-p にすると feature が変わり、ビルドし直しになることがある）
       - name: cargo test（DynamoDB Local）
-        run: cargo test -p galley-core --locked --test repository --test revision --test purge --test dynamodb
+        run: cargo test --workspace --locked --test repository --test revision --test purge --test dynamodb
         env:
           GALLEY_TEST_DYNAMODB_ENDPOINT: http://localhost:8000
 
