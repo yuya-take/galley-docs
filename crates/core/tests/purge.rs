@@ -1,10 +1,14 @@
 //! 資料と版の物理削除（`galley purge`）を、DB とストレージを使って確かめる。
+//! SQLite と DynamoDB Local のどちらでも動く（`common`）。
 
-use std::{error::Error, path::PathBuf, sync::Arc};
+mod common;
+
+use std::{error::Error, sync::Arc};
 
 use async_trait::async_trait;
+use common::TestDatabase;
 use galley_core::{
-    adapter::{blob_store::ObjectStoreBlobStore, sqlite::SqliteDatabase},
+    adapter::blob_store::ObjectStoreBlobStore,
     app::{
         document::{
             ArchiveDocument, CreateDocument, CreateDocumentInput, FindDocument, PurgeDocument,
@@ -26,8 +30,7 @@ use galley_core::{
         error::RepositoryError,
         project::{Project, ProjectSlug},
         revision::{
-            AuthorName, NewRevision, Revision, RevisionMessage, RevisionNumber, RevisionRepository,
-            RevisionSource,
+            AuthorName, NewRevision, Revision, RevisionMessage, RevisionNumber, RevisionSource,
         },
         shared::{DocumentId, ProjectId, RevisionId},
         upload::HtmlSizeLimit,
@@ -38,37 +41,18 @@ use jiff::Timestamp;
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Fixture {
-    database: SqliteDatabase,
+    database: TestDatabase,
     blobs: Arc<ObjectStoreBlobStore>,
     project: Project,
-    _dir: Option<TempDir>,
-}
-
-/// テストごとの一時ディレクトリ。終わったら消す。
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-impl TempDir {
-    fn new() -> Result<Self, Box<dyn Error>> {
-        let dir =
-            TempDir(std::env::temp_dir().join(format!("galley-test-{}", uuid::Uuid::new_v4())));
-        std::fs::create_dir_all(&dir.0)?;
-        Ok(dir)
-    }
 }
 
 impl Fixture {
     async fn new() -> Result<Self, Box<dyn Error>> {
-        Self::with_database(SqliteDatabase::in_memory().await?).await
+        Self::with_database(TestDatabase::new().await?).await
     }
 
-    async fn with_database(database: SqliteDatabase) -> Result<Self, Box<dyn Error>> {
-        let project = CreateProject::new(Arc::new(database.projects()))
+    async fn with_database(database: TestDatabase) -> Result<Self, Box<dyn Error>> {
+        let project = CreateProject::new(database.projects())
             .execute(&ProjectInput {
                 slug: "sales".to_owned(),
                 name: "営業部".to_owned(),
@@ -80,27 +64,26 @@ impl Fixture {
             database,
             blobs: Arc::new(ObjectStoreBlobStore::in_memory()),
             project,
-            _dir: None,
         })
     }
 
     fn purge(&self) -> PurgeDocument {
-        self.purge_with(Arc::new(self.database.documents()))
+        self.purge_with(self.database.documents())
     }
 
     fn purge_with(&self, documents: Arc<dyn DocumentRepository>) -> PurgeDocument {
         PurgeDocument::new(
-            Arc::new(self.database.projects()),
+            self.database.projects(),
             documents,
-            Arc::new(self.database.revisions()),
+            self.database.revisions(),
             self.blobs.clone(),
         )
     }
 
     fn create_document(&self) -> CreateDocument {
         CreateDocument::new(
-            Arc::new(self.database.projects()),
-            Arc::new(self.database.documents()),
+            self.database.projects(),
+            self.database.documents(),
             self.blobs.clone(),
             HtmlSizeLimit::DEFAULT,
         )
@@ -119,8 +102,8 @@ impl Fixture {
 
     async fn add(&self, id: DocumentId, html: &str) -> Result<RegisteredRevision, AppError> {
         AddRevision::new(
-            Arc::new(self.database.documents()),
-            Arc::new(self.database.revisions()),
+            self.database.documents(),
+            self.database.revisions(),
             self.blobs.clone(),
             HtmlSizeLimit::DEFAULT,
         )
@@ -128,13 +111,41 @@ impl Fixture {
         .await
     }
 
-    async fn revert(&self, id: DocumentId, number: u32) -> Result<RegisteredRevision, AppError> {
-        RevertToRevision::new(
-            Arc::new(self.database.documents()),
-            Arc::new(self.database.revisions()),
+    async fn add_by(
+        &self,
+        id: DocumentId,
+        html: &str,
+        author: &str,
+    ) -> Result<RegisteredRevision, AppError> {
+        AddRevision::new(
+            self.database.documents(),
+            self.database.revisions(),
+            self.blobs.clone(),
+            HtmlSizeLimit::DEFAULT,
         )
-        .execute(id, number, "鈴木", RevisionSource::Web)
+        .execute(
+            id,
+            RevisionInput {
+                author_name: author.to_owned(),
+                ..input(html)
+            },
+        )
         .await
+    }
+
+    /// その名前で版を登録したことがある資料の数（「自分が更新」）。
+    async fn authored_by(&self, name: &str) -> Result<usize, Box<dyn Error>> {
+        let query = DocumentQuery {
+            author_name: Some(AuthorName::parse(name)?),
+            ..DocumentQuery::default()
+        };
+        Ok(self.database.documents().list(&query).await?.len())
+    }
+
+    async fn revert(&self, id: DocumentId, number: u32) -> Result<RegisteredRevision, AppError> {
+        RevertToRevision::new(self.database.documents(), self.database.revisions())
+            .execute(id, number, "鈴木", RevisionSource::Web)
+            .await
     }
 
     async fn numbers(&self, id: DocumentId) -> Result<Vec<u32>, Box<dyn Error>> {
@@ -214,7 +225,7 @@ async fn purge_document_removes_revisions_and_blobs() -> TestResult {
     assert!(!fx.has_blob(V1).await?);
     assert!(!fx.has_blob(V2).await?);
     assert!(matches!(
-        FindDocument::new(Arc::new(fx.database.documents()))
+        FindDocument::new(fx.database.documents())
             .execute(fx.project.id, "plan")
             .await,
         Err(AppError::DocumentNotFound)
@@ -244,7 +255,7 @@ async fn purge_document_keeps_blob_shared_with_other_document() -> TestResult {
     assert_eq!(outcome.deleted_blobs, vec![hash(V2)]);
     assert!(fx.has_blob(V1).await?);
     assert!(!fx.has_blob(V2).await?);
-    let content = ReadRevisionContent::new(Arc::new(fx.database.revisions()), fx.blobs.clone())
+    let content = ReadRevisionContent::new(fx.database.revisions(), fx.blobs.clone())
         .execute(other.revision.id)
         .await?;
     assert_eq!(content.html, V1.as_bytes());
@@ -255,10 +266,10 @@ async fn purge_document_keeps_blob_shared_with_other_document() -> TestResult {
 async fn purge_works_on_archived_document_and_project() -> TestResult {
     let fx = Fixture::new().await?;
     let created = fx.create("plan.html", V1).await?;
-    ArchiveDocument::new(Arc::new(fx.database.documents()))
+    ArchiveDocument::new(fx.database.documents())
         .execute(created.document.id)
         .await?;
-    ArchiveProject::new(Arc::new(fx.database.projects()))
+    ArchiveProject::new(fx.database.projects())
         .execute(fx.project.id)
         .await?;
 
@@ -330,7 +341,7 @@ async fn purge_revision_leaves_a_gap_in_numbers() -> TestResult {
         .find_by_id(id)
         .await?
         .ok_or("資料がありません")?;
-    let find = FindRevision::new(Arc::new(fx.database.revisions()));
+    let find = FindRevision::new(fx.database.revisions());
     assert!(matches!(
         find.execute(&document, Some(2)).await,
         Err(AppError::RevisionNotFound)
@@ -364,6 +375,62 @@ async fn purge_revision_rejects_latest() -> TestResult {
     Ok(())
 }
 
+/// 版の多い資料も、すべての版と使われなくなったブロブを消す。DynamoDB では 1 回のトランザクション
+/// （100 件）に収まらないので、古い版から分けて消す。
+#[tokio::test]
+async fn purge_document_with_many_revisions() -> TestResult {
+    const REVISIONS: u32 = 40;
+    let fx = Fixture::new().await?;
+    let html = |n: u32| format!("<title>計画</title><p>第{n}版");
+    let created = fx.create("plan.html", &html(1)).await?;
+    let id = created.document.id;
+    for n in 2..=REVISIONS {
+        fx.add(id, &html(n)).await?;
+    }
+    // 第1版と同じ内容をほかの資料にも登録しておく（ブロブは残る）
+    fx.create("copy.html", &html(1)).await?;
+
+    let plan = fx.purge().plan("sales", "plan", None).await?;
+    assert_eq!(plan.revisions.len(), REVISIONS as usize);
+    let outcome = fx.purge().execute(&plan).await?;
+    let purged: Vec<u32> = outcome.purged.numbers.iter().map(|n| n.get()).collect();
+    assert_eq!(purged, (1..=REVISIONS).rev().collect::<Vec<_>>());
+    let expected: Vec<BlobHash> = (2..=REVISIONS).rev().map(|n| hash(&html(n))).collect();
+    assert_eq!(outcome.purged.unreferenced_blobs, expected);
+    assert_eq!(outcome.deleted_blobs, expected);
+    assert!(outcome.failed_blobs.is_empty());
+
+    assert_eq!(fx.database.documents().find_by_id(id).await?, None);
+    assert!(fx.numbers(id).await?.is_empty());
+    assert!(fx.has_blob(&html(1)).await?);
+    assert!(!fx.has_blob(&html(REVISIONS)).await?);
+    // 残したブロブは、ほかの資料の版から使える
+    let copy = fx.purge().plan("sales", "copy", None).await?;
+    assert_eq!(copy.blobs, vec![hash(&html(1))]);
+    Ok(())
+}
+
+/// 版を消すと、その版だけを登録した人では「自分が更新」に出なくなる。
+#[tokio::test]
+async fn purge_revision_updates_author_filter() -> TestResult {
+    let fx = Fixture::new().await?;
+    let created = fx.create("plan.html", V1).await?;
+    let id = created.document.id;
+    fx.add_by(id, V2, "田中").await?;
+    fx.add_by(id, V3, "佐藤").await?;
+    assert_eq!(fx.authored_by("田中").await?, 1);
+
+    let plan = fx.purge().plan("sales", "plan", Some(2)).await?;
+    fx.purge().execute(&plan).await?;
+    assert_eq!(fx.authored_by("田中").await?, 0);
+    assert_eq!(fx.authored_by("佐藤").await?, 1);
+
+    // もう一度登録すれば、また出る
+    fx.add_by(id, V2, "田中").await?;
+    assert_eq!(fx.authored_by("田中").await?, 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn purge_revision_keeps_blob_used_by_restored_revision() -> TestResult {
     let fx = Fixture::new().await?;
@@ -383,7 +450,7 @@ async fn purge_revision_keeps_blob_used_by_restored_revision() -> TestResult {
     assert!(outcome.purged.unreferenced_blobs.is_empty());
     assert!(outcome.deleted_blobs.is_empty());
     assert!(fx.has_blob(V2).await?);
-    let content = ReadRevisionContent::new(Arc::new(fx.database.revisions()), fx.blobs.clone())
+    let content = ReadRevisionContent::new(fx.database.revisions(), fx.blobs.clone())
         .execute(restored.revision.id)
         .await?;
     assert_eq!(content.html, V2.as_bytes());
@@ -562,7 +629,7 @@ async fn blob_registered_again_after_commit_is_kept() -> TestResult {
     let plan = fx.purge().plan("sales", "secret", None).await?;
     assert_eq!(plan.blobs, vec![hash(V2)]);
     let racing = Arc::new(RegisterAfterPurge {
-        inner: Arc::new(fx.database.documents()),
+        inner: fx.database.documents(),
         create: fx.create_document(),
         project_id: fx.project.id,
     });
@@ -573,7 +640,7 @@ async fn blob_registered_again_after_commit_is_kept() -> TestResult {
 
     // 後から登録した資料は読める
     let again = fx.purge().plan("sales", "again", None).await?;
-    let content = ReadRevisionContent::new(Arc::new(fx.database.revisions()), fx.blobs.clone())
+    let content = ReadRevisionContent::new(fx.database.revisions(), fx.blobs.clone())
         .execute(again.revisions[0].id)
         .await?;
     assert_eq!(content.html, V2.as_bytes());
@@ -581,16 +648,10 @@ async fn blob_registered_again_after_commit_is_kept() -> TestResult {
 }
 
 /// サーバーと `galley purge` のように、別々に開いた DB（書き込みの順番待ちを共有しない）から
-/// 同時に書き込んでも、SQLite のロックを待って両方とも終わる。
+/// 同時に書き込んでも、両方とも終わる（SQLite はロックを待ち、DynamoDB は条件付き書き込みでやり直す）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn purge_from_another_connection_while_adding() -> TestResult {
-    let dir = TempDir::new()?;
-    let path = dir.0.join("galley.db");
-    let server = Fixture {
-        _dir: Some(dir),
-        ..Fixture::with_database(SqliteDatabase::open(&path).await?).await?
-    };
-    let server = Arc::new(server);
+    let server = Arc::new(Fixture::with_database(TestDatabase::file().await?).await?);
     let busy = server.create("busy.html", V1).await?;
     let target = server.create("plan.html", V2).await?;
     for i in 0..5 {
@@ -599,12 +660,12 @@ async fn purge_from_another_connection_while_adding() -> TestResult {
             .await?;
     }
 
-    // 別のプロセスの代わりに、同じファイルを別に開く（ストレージは同じものを使う）
-    let cli_database = SqliteDatabase::open(&path).await?;
+    // 別のプロセスの代わりに、同じ DB を別に開く（ストレージは同じものを使う）
+    let cli_database = server.database.reopen().await?;
     let purge = PurgeDocument::new(
-        Arc::new(cli_database.projects()),
-        Arc::new(cli_database.documents()),
-        Arc::new(cli_database.revisions()),
+        cli_database.projects(),
+        cli_database.documents(),
+        cli_database.revisions(),
         server.blobs.clone(),
     );
 

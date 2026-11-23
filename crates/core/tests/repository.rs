@@ -1,9 +1,12 @@
-//! SQLite（Toasty）の実装とユースケースを、マイグレーションを適用した DB で確かめる。
+//! リポジトリの実装とユースケースを、DB を使って確かめる。SQLite（既定）と DynamoDB Local
+//! （`GALLEY_TEST_DYNAMODB_ENDPOINT`）のどちらでも同じテストを通す（`common`）。SQLite だけの性質は `sqlite.rs`。
+
+mod common;
 
 use std::{error::Error, sync::Arc};
 
+use common::TestDatabase;
 use galley_core::{
-    adapter::sqlite::SqliteDatabase,
     app::{
         document::{
             ArchiveDocument, ChooseDocumentSlug, FindDocumentByFileName, ListDocuments,
@@ -32,14 +35,14 @@ use jiff::{Timestamp, ToSpan};
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Fixture {
-    database: SqliteDatabase,
+    database: TestDatabase,
     documents: Arc<dyn DocumentRepository>,
 }
 
 impl Fixture {
     async fn new() -> Result<Self, Box<dyn Error>> {
-        let database = SqliteDatabase::in_memory().await?;
-        let documents = Arc::new(database.documents());
+        let database = TestDatabase::new().await?;
+        let documents = database.documents();
         Ok(Self {
             database,
             documents,
@@ -47,7 +50,7 @@ impl Fixture {
     }
 
     async fn create_project(&self, slug: &str, name: &str) -> Result<Project, AppError> {
-        CreateProject::new(Arc::new(self.database.projects()))
+        CreateProject::new(self.database.projects())
             .execute(&project_input(slug, name))
             .await
     }
@@ -111,7 +114,7 @@ async fn create_and_find_project() -> TestResult {
     let fixture = Fixture::new().await?;
     let created = fixture.create_project("sales", "営業部").await?;
 
-    let found = FindProject::new(Arc::new(fixture.database.projects()))
+    let found = FindProject::new(fixture.database.projects())
         .execute("sales")
         .await?;
     assert_eq!(found, created);
@@ -133,7 +136,7 @@ async fn update_project_rejects_slug_of_another_project() -> TestResult {
     let fixture = Fixture::new().await?;
     fixture.create_project("sales", "営業部").await?;
     let dev = fixture.create_project("dev", "開発部").await?;
-    let update = UpdateProject::new(Arc::new(fixture.database.projects()));
+    let update = UpdateProject::new(fixture.database.projects());
 
     let result = update
         .execute(dev.id, &project_input("sales", "開発部"))
@@ -145,6 +148,50 @@ async fn update_project_rejects_slug_of_another_project() -> TestResult {
         .execute(dev.id, &project_input("dev", "開発本部"))
         .await?;
     assert_eq!(updated.name.as_str(), "開発本部");
+    Ok(())
+}
+
+/// slug を変えると、新しい slug で見つかり、古い slug はほかのプロジェクトが使えるようになる
+/// （DynamoDB では slug の印を同じトランザクションで付け替える）。
+#[tokio::test]
+async fn update_project_slug_frees_old_slug() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let sales = fixture.create_project("sales", "営業部").await?;
+    let update = UpdateProject::new(fixture.database.projects());
+    let find = FindProject::new(fixture.database.projects());
+
+    let renamed = update
+        .execute(sales.id, &project_input("eigyo", "営業本部"))
+        .await?;
+    assert_eq!(find.execute("eigyo").await?, renamed);
+    assert!(matches!(
+        find.execute("sales").await,
+        Err(AppError::ProjectNotFound)
+    ));
+
+    // 古い slug は空き、新しい slug は使えない
+    let other = fixture.create_project("sales", "新しい営業部").await?;
+    assert_ne!(other.id, sales.id);
+    assert!(matches!(
+        fixture.create_project("eigyo", "別の営業部").await,
+        Err(AppError::ProjectSlugTaken(_))
+    ));
+    assert!(matches!(
+        update
+            .execute(other.id, &project_input("eigyo", "新しい営業部"))
+            .await,
+        Err(AppError::ProjectSlugTaken(_))
+    ));
+
+    // 元の slug に戻すこともできる（いまは other が使っているので、その前に other を変える）
+    update
+        .execute(other.id, &project_input("sales-2", "新しい営業部"))
+        .await?;
+    let restored = update
+        .execute(sales.id, &project_input("sales", "営業部"))
+        .await?;
+    assert_eq!(find.execute("sales").await?, restored);
+    assert_eq!(find.execute("sales-2").await?.id, other.id);
     Ok(())
 }
 
@@ -177,7 +224,7 @@ async fn list_projects_counts_active_documents() -> TestResult {
         .execute(archived.id)
         .await?;
 
-    let projects = Arc::new(fixture.database.projects());
+    let projects = fixture.database.projects();
     let summaries = ListProjects::new(projects.clone())
         .execute(ArchiveFilter::Active)
         .await?;
@@ -382,7 +429,7 @@ async fn archived_documents_and_projects_are_hidden() -> TestResult {
     ArchiveDocument::new(fixture.documents.clone())
         .execute(plan.id)
         .await?;
-    ArchiveProject::new(Arc::new(fixture.database.projects()))
+    ArchiveProject::new(fixture.database.projects())
         .execute(dev.id)
         .await?;
 
@@ -421,7 +468,7 @@ async fn find_with_project_returns_owning_project() -> TestResult {
     let plan = fixture
         .create_document(&hr, "plan", "採用計画", "佐藤", at(0)?)
         .await?;
-    ArchiveProject::new(Arc::new(fixture.database.projects()))
+    ArchiveProject::new(fixture.database.projects())
         .execute(hr.id)
         .await?;
 
@@ -479,7 +526,7 @@ async fn archive_document_rejects_archived_missing_and_archived_project() -> Tes
     ));
 
     // アーカイブしたプロジェクトの資料：資料はアーカイブしない
-    ArchiveProject::new(Arc::new(fixture.database.projects()))
+    ArchiveProject::new(fixture.database.projects())
         .execute(sales.id)
         .await?;
     assert!(matches!(
@@ -578,30 +625,5 @@ async fn find_document_by_file_name_skips_archived() -> TestResult {
         .execute(plan.id)
         .await?;
     assert_eq!(find.execute(sales.id, "jigyo-keikaku.html").await?, None);
-    Ok(())
-}
-
-#[tokio::test]
-async fn file_database_uses_wal_and_reapplies_migrations_safely() -> TestResult {
-    let dir = std::env::temp_dir().join(format!("galley-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("galley.db");
-
-    let database = SqliteDatabase::open(&path).await?;
-    let sales = CreateProject::new(Arc::new(database.projects()))
-        .execute(&project_input("sales", "営業部"))
-        .await?;
-    drop(database);
-
-    // 2回目に開いてもマイグレーションは重ねて適用されず、データも残る
-    let database = SqliteDatabase::open(&path).await?;
-    let found = FindProject::new(Arc::new(database.projects()))
-        .execute("sales")
-        .await?;
-    assert_eq!(found.id, sales.id);
-    assert_eq!(database.journal_mode().await?, "wal");
-
-    drop(database);
-    std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
