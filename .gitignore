@@ -1,2 +1,15 @@
 /target
 /data
+
+# Terraform・OpenTofu（deploy/aws）。state と変数の値は秘密を含むのでコミットしない
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+# プロバイダーのロックは Terraform と OpenTofu で登録先が違うので、使う人が自分のリポジトリで持つ
+.terraform.lock.hcl
+/deploy/aws/backend.tf
+/deploy/aws/.build/

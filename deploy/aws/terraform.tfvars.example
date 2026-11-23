@@ -1,0 +1,17 @@
+# terraform.tfvars にコピーして書き換える（terraform.tfvars はコミットしない）。
+# 変数の説明は variables.tf にある。
+
+# 画面と MCP のホスト名。資料配信は docs.<app_domain> になる
+app_domain = "galley.example.com"
+
+# Cognito のマネージドログインのドメイン（<接頭辞>.auth.ap-northeast-1.amazoncognito.com）
+cognito_domain_prefix = "acme-galley"
+
+# ECR に複製したイメージのタグ。最初の apply（ECR と証明書だけを作る段階）ではコメントのままでよい
+# image_tag = "v0.1.0"
+
+# Route 53 のホストゾーンの ID。渡せばレコードまで作る。渡さなければ、手で作るレコードを出力する
+# route53_zone_id = "Z0123456789ABCDEFGHIJ"
+
+# ログインの多要素認証（ON か OFF）。既定は ON で、全員に認証アプリ（TOTP）を求める
+# mfa_configuration = "OFF"

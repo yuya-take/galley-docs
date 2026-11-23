@@ -1,0 +1,15 @@
+# state の置き場所の例。backend.tf にコピーして書き換える（backend.tf はコミットしない）。
+# 置き場所は使う人が決める。何も置かなければ、このフォルダの terraform.tfstate に書く（コミットしない）。
+#
+# S3 に置く例（use_lockfile は S3 のオブジェクトでロックする。Terraform 1.10 以上、OpenTofu 1.10 以上）。
+# バケットは先に作り、バージョニングを有効にしておく。
+
+terraform {
+  backend "s3" {
+    bucket       = "example-terraform-state"
+    key          = "galley/terraform.tfstate"
+    region       = "ap-northeast-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
