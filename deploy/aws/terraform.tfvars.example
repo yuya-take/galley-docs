@@ -13,5 +13,5 @@ cognito_domain_prefix = "acme-galley"
 # Route 53 のホストゾーンの ID。渡せばレコードまで作る。渡さなければ、手で作るレコードを出力する
 # route53_zone_id = "Z0123456789ABCDEFGHIJ"
 
-# ログインの多要素認証（OFF か ON）。ON にすると、全員に認証アプリ（TOTP）を求める
-# mfa_configuration = "ON"
+# ログインの多要素認証（ON か OFF）。既定は ON で、全員に認証アプリ（TOTP）を求める
+# mfa_configuration = "OFF"

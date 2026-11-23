@@ -62,7 +62,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
    | `cognito_domain_prefix` | （必須） | Cognito のマネージドログインのドメイン（`<接頭辞>.auth.<region>.amazoncognito.com`） |
    | `image_tag` | なし | ECR に複製したイメージのタグ。手順の 2 までは未設定でよい |
    | `route53_zone_id` | なし | Route 53 のホストゾーンの ID。渡せばレコードまで作る |
-   | `mfa_configuration` | `OFF` | `ON` にすると、全員に認証アプリ（TOTP）を求める（初回のログインで設定させる）。インターネットに出すので `ON` を勧めます |
+   | `mfa_configuration` | `ON` | 全員に認証アプリ（TOTP）を求める（初回のログインで設定させる）。インターネットに出す構成なので既定で求める。`OFF` にするとパスワードだけになる |
    | `deletion_protection` | `true` | ユーザープールと DynamoDB の削除保護。`true` のあいだは、中身のある S3 のバケットも消さない |
    | `noncurrent_version_retention_days` | `30` | S3 で削除・上書きされた資料の実体（古い版）を残す日数（「物理削除のあと」） |
    | `region` | `ap-northeast-1` | Lambda・API Gateway・DynamoDB・S3・Cognito のリージョン |
@@ -135,7 +135,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
    - 登録されたクライアントは、ユーザープールのアプリクライアントの上限（既定 1,000）に数えます。増えすぎたら、コンソールのアプリクライアントの一覧から使われていないものを消してください
    - 登録のエンドポイント（`/oauth2/register`）への大量の登録を防ぐには、AWS WAF のレートベースのルールをマネージドログインに付けられます（月額の費用がかかるので、この Terraform には入れていません）
 
-7. **利用者を作る**。管理者が作り、招待のメール（仮のパスワード）が届きます。利用者が自分で登録することはできません
+7. **利用者を作る**。管理者が作り、招待のメール（仮のパスワード）が届きます。利用者が自分で登録することはできません。最初のログインでパスワードを変え、MFA が `ON`（既定）なら認証アプリ（Google Authenticator など）を登録します
 
    ```bash
    aws cognito-idp admin-create-user \

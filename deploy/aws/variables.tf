@@ -48,9 +48,9 @@ variable "region" {
 }
 
 variable "mfa_configuration" {
-  description = "ログインの多要素認証。OFF（使わない）か ON（認証アプリの TOTP を全員に求める。初回のログインで設定させる）"
+  description = "ログインの多要素認証。ON（認証アプリの TOTP を全員に求める。初回のログインで設定させる）か OFF（使わない）。インターネットに出す構成なので、既定は ON"
   type        = string
-  default     = "OFF"
+  default     = "ON"
 
   validation {
     condition     = contains(["OFF", "ON"], var.mfa_configuration)
