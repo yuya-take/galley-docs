@@ -54,6 +54,10 @@ fn example_project(projects: &[ProjectSummary]) -> String {
 #[component]
 async fn claude_code_section<'a>(mcp_url: &'a str, author: Option<&'a str>) -> Result<impl View> {
     let command = mcp_command::claude_code(mcp_url, author);
+    // 日本語の名前など、エンコードしてコマンドに入れたときだけ説明を添える
+    let encoded_author = author
+        .map(|name| mcp_command::author_value(Some(name)))
+        .filter(|value| Some(value.as_str()) != author);
     Ok(view! {
         <section class="panel settings-section" aria-labelledby="connect-claude-code">
             <h2 id="connect-claude-code">"Claude Code に登録する"</h2>
@@ -71,12 +75,19 @@ async fn claude_code_section<'a>(mcp_url: &'a str, author: Option<&'a str>) -> R
                     None => {
                         <p>
                             "最後の名前が、AI が登録した資料の更新者として残ります。"
-                            "名前が未設定なので「" (mcp_command::AUTHOR_PLACEHOLDER) "」を入れています。設定すると、コマンドに入ります。"
+                            "名前が未設定なので「" (mcp_command::AUTHOR_PLACEHOLDER) "」を入れています。設定すると、コマンドに入ります（日本語の名前は、Claude Code が送れる形にエンコードして入れます）。"
                         </p>
                         <button type="button" class="button button--primary button--small" data-action="change-author">"名前を設定する"</button>
                     },
                 }
             </div>
+            if let Some(value) = &encoded_author {
+                <p class="field-hint">
+                    "Claude Code はヘッダーに日本語を入れられないので、名前を UTF-8 のパーセントエンコード（"
+                    <code>(value)</code>
+                    "）にしています。Galley が元の名前に戻して記録します。"
+                </p>
+            }
             <p class="field-hint">"名前を変えたときは、" <code>"claude mcp remove galley"</code> " で消してから登録し直します。"</p>
         </section>
     })
@@ -130,7 +141,10 @@ async fn other_clients_section<'a>(mcp_url: &'a str, author: Option<&'a str>) ->
                     <tr>
                         <th scope="row">"ヘッダー"</th>
                         <td><code>(format!("{}: {}", mcp_command::AUTHOR_HEADER, mcp_command::author_value(author)))</code></td>
-                        <td>"必須。AI が登録した資料の更新者として残ります"</td>
+                        <td>
+                            "必須。AI が登録した資料の更新者として残ります。"
+                            "ASCII 以外の文字は、UTF-8 をパーセントエンコードした値で送ります（生の UTF-8 を送れるクライアントは、そのままでも読めます）"
+                        </td>
                     </tr>
                     <tr>
                         <th scope="row">"ヘッダー"</th>

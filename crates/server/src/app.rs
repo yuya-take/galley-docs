@@ -489,6 +489,49 @@ mod tests {
         Ok(())
     }
 
+    /// Claude Code は ASCII しかヘッダーに入れられないので、日本語の名前はパーセントエンコードして送る。
+    /// エンコードした名前・生の UTF-8・ASCII のどれでも、同じように更新者名として記録する。
+    #[tokio::test]
+    async fn author_name_can_be_percent_encoded() -> TestResult {
+        let mcp = Mcp::connect(None).await?;
+        let cases = [
+            ("encoded", "%E4%BD%90%E8%97%A4", "佐藤"),
+            ("raw", "佐藤", "佐藤"),
+            ("ascii", "Sato", "Sato"),
+            ("percent", "50%off", "50%off"),
+        ];
+        for (slug, header, expected) in cases {
+            let (text, is_error) = mcp
+                .call(
+                    "create_document",
+                    json!({"project":"sales","title":"計画","html":HTML_V1,"slug":slug}),
+                    &[("x-author-name", header)],
+                )
+                .await?;
+            assert!(!is_error, "{text}");
+            let (text, _) = mcp
+                .call(
+                    "get_document",
+                    json!({"project":"sales","document":slug}),
+                    &[],
+                )
+                .await?;
+            let document: Value = serde_json::from_str(&text)?;
+            assert_eq!(document["author_name"], expected, "{header}");
+        }
+
+        // エンコードすれば改行も送れるが、戻した名前も画面の登録と同じ検査を通す
+        let (text, is_error) = mcp
+            .call(
+                "create_document",
+                json!({"project":"sales","title":"計画","html":HTML_V1,"slug":"newline"}),
+                &[("x-author-name", "a%0Ab")],
+            )
+            .await?;
+        assert!(is_error, "{text}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn external_resources_are_reported_for_ai() -> TestResult {
         let mcp = Mcp::connect(None).await?;
