@@ -24,7 +24,7 @@ use galley_core::{
         upload::REJECTION_REASON,
     },
 };
-use galley_web::AppUrl;
+use galley_web::{AppUrl, author_header};
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -102,13 +102,13 @@ fn tool_error(err: &AppError) -> ToolResult {
     )]))
 }
 
-/// 接続設定の `X-Author-Name`。ASCII 以外（日本語の名前）も読めるよう UTF-8 として読む。
+/// 接続設定の `X-Author-Name`。日本語の名前は、パーセントエンコードした値（Claude Code など
+/// ASCII しか送れないクライアント）と生の UTF-8 の値（ほかのクライアント）のどちらでも読む。
 fn author_name(ctx: &RequestContext<RoleServer>) -> Option<String> {
     ctx.extensions
         .get::<http::request::Parts>()
-        .and_then(|parts| parts.headers.get("x-author-name"))
-        .and_then(|value| std::str::from_utf8(value.as_bytes()).ok())
-        .map(|name| name.trim().to_owned())
+        .and_then(|parts| parts.headers.get(author_header::AUTHOR_HEADER))
+        .and_then(|value| author_header::decode(value.as_bytes()))
         .filter(|name| !name.is_empty())
 }
 
@@ -120,7 +120,7 @@ fn request_host(ctx: &RequestContext<RoleServer>) -> Option<String> {
         .map(str::to_owned)
 }
 
-const MISSING_AUTHOR: &str = "更新者名がありません。MCP の接続設定に X-Author-Name ヘッダー（例：X-Author-Name: 佐藤）を入れてください";
+const MISSING_AUTHOR: &str = "更新者名がありません。MCP の接続設定に X-Author-Name ヘッダー（例：X-Author-Name: Sato）を入れてください。日本語の名前は UTF-8 をパーセントエンコードした値にします（例：佐藤なら X-Author-Name: %E4%BD%90%E8%97%A4）";
 
 #[tool_router]
 impl GalleyMcp {

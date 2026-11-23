@@ -8,6 +8,7 @@ mod cli;
 mod database;
 mod guard;
 mod mcp;
+mod oauth;
 mod purge;
 mod viewer;
 
@@ -118,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
     if mcp_token.is_required() {
         tracing::info!("MCP は Authorization: Bearer のトークンを求めます");
     }
+    let oauth = oauth::ProtectedResourceMetadata::from_env(&mcp_token)?;
     let app = app::app_router(
         web,
         app::mcp_app(
@@ -132,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
         ),
         &allowed_hosts,
         mcp_token,
+        oauth,
         html_size_limit,
     );
     let viewer = viewer::router(

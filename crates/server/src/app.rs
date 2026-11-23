@@ -1,9 +1,9 @@
-//! アプリ本体（:8080）のルーターの組み立て。画面（Topcoat）と `/mcp` を載せ、
+//! アプリ本体（:8080）のルーターの組み立て。画面（Topcoat）と `/mcp`、MCP の OAuth のメタデータを載せ、
 //! 外側に Host の検査と CSRF 対策を置く。
 
 use std::{convert::Infallible, sync::Arc};
 
-use axum::{Router, extract::Request, middleware, response::IntoResponse};
+use axum::{Router, extract::Request, middleware, response::IntoResponse, routing::get};
 use galley_core::{
     app::{
         document::{ArchiveDocument, CreateDocument, FindDocument, ListDocuments},
@@ -17,7 +17,7 @@ use galley_core::{
 };
 use galley_web::AppUrl;
 use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
 };
 use tower::{Service, ServiceBuilder};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -25,6 +25,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use crate::{
     guard::{self, AllowedHosts, McpToken},
     mcp::{GalleyMcp, McpApp},
+    oauth::{self, ProtectedResourceMetadata},
 };
 
 /// ユースケースに渡すリポジトリとストレージ。実装（adapter）は `main.rs` で作る。
@@ -63,7 +64,12 @@ pub fn mcp_app(ports: Ports, app_url: AppUrl, html_size_limit: HtmlSizeLimit) ->
     })
 }
 
-/// `/mcp` 以外はすべて画面（`web`）に渡す。Host の検査を一番外に置く。
+/// `/mcp` と OAuth のメタデータ以外はすべて画面（`web`）に渡す。Host の検査を一番外に置く。
+///
+/// MCP はセッションを持たない（リクエストごとに処理を作り、応答は JSON で返す）。AWS では Lambda の
+/// 実行環境がリクエストごとに入れ替わりうるため。Docker の構成も同じ動きにする。
+///
+/// `oauth` が `None`（`MCP_OAUTH_*` が未設定）なら、メタデータは 404 を返す。
 ///
 /// `html_size_limit` には `mcp_app` に渡したものと同じ1ファイルのサイズ上限を渡す。MCP のリクエストの
 /// 大きさの上限は、ここから決める（[`HtmlSizeLimit::json_body_limit`]。JSON のエスケープで増える分の余裕）。
@@ -72,6 +78,7 @@ pub fn app_router<W>(
     mcp_app: Arc<McpApp>,
     allowed_hosts: &Arc<AllowedHosts>,
     mcp_token: Arc<McpToken>,
+    oauth: Option<Arc<ProtectedResourceMetadata>>,
     html_size_limit: HtmlSizeLimit,
 ) -> Router
 where
@@ -81,8 +88,11 @@ where
 {
     let mcp = StreamableHttpService::new(
         move || Ok(GalleyMcp::new(mcp_app.clone())),
-        LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts.for_rmcp()),
+        Arc::new(NeverSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_allowed_hosts(allowed_hosts.for_rmcp())
+            .with_legacy_session_mode(false)
+            .with_json_response(true),
     );
     let mcp = ServiceBuilder::new()
         .layer(middleware::from_fn_with_state(
@@ -93,8 +103,20 @@ where
             html_size_limit.json_body_limit(),
         ))
         .service(mcp);
+    // クライアントがトークンを取る前に読むものなので、MCP_TOKEN の確認はかけない
+    let metadata = Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(oauth::protected_resource_metadata),
+        )
+        .route(
+            "/.well-known/oauth-protected-resource/mcp",
+            get(oauth::protected_resource_metadata),
+        )
+        .with_state(oauth);
     Router::new()
         .nest_service("/mcp", mcp)
+        .merge(metadata)
         .fallback_service(web)
         .layer(middleware::from_fn(guard::check_csrf))
         .layer(middleware::from_fn_with_state(
@@ -126,7 +148,6 @@ mod tests {
 
     struct Mcp {
         router: Router,
-        session: Option<String>,
         /// MCP の外から状態を変える（プロジェクトをアーカイブするなど）ときに使う。
         database: SqliteDatabase,
     }
@@ -139,6 +160,18 @@ mod tests {
         async fn with_limit(
             token: Option<&str>,
             html_size_limit: HtmlSizeLimit,
+        ) -> TestResult<Self> {
+            Self::build(token, html_size_limit, None).await
+        }
+
+        async fn with_oauth(oauth: ProtectedResourceMetadata) -> TestResult<Self> {
+            Self::build(None, HtmlSizeLimit::DEFAULT, Some(Arc::new(oauth))).await
+        }
+
+        async fn build(
+            token: Option<&str>,
+            html_size_limit: HtmlSizeLimit,
+            oauth: Option<Arc<ProtectedResourceMetadata>>,
         ) -> TestResult<Self> {
             let database = SqliteDatabase::in_memory().await?;
             CreateProject::new(Arc::new(database.projects()))
@@ -166,13 +199,10 @@ mod tests {
                 ),
                 &Arc::new(AllowedHosts::parse(None)?),
                 Arc::new(McpToken::from_env(token.map(str::to_owned))),
+                oauth,
                 html_size_limit,
             );
-            Ok(Self {
-                router,
-                session: None,
-                database,
-            })
+            Ok(Self { router, database })
         }
 
         async fn post(
@@ -186,9 +216,6 @@ mod tests {
                 .header("host", "localhost:8080")
                 .header("content-type", "application/json")
                 .header("accept", "application/json, text/event-stream");
-            if let Some(session) = &self.session {
-                request = request.header("mcp-session-id", session);
-            }
             for (name, value) in headers {
                 request = request.header(*name, *value);
             }
@@ -208,25 +235,39 @@ mod tests {
                 String::from_utf8(response.into_body().collect().await?.to_bytes().to_vec())?;
             Ok((status, headers, body))
         }
+
+        async fn get(&self, uri: &str, host: &str) -> TestResult<(StatusCode, String)> {
+            let response = self
+                .router
+                .clone()
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri(uri)
+                        .header("host", host)
+                        .header("accept", "application/json, text/event-stream")
+                        .body(Body::empty())?,
+                )
+                .await?;
+            let status = response.status();
+            let body =
+                String::from_utf8(response.into_body().collect().await?.to_bytes().to_vec())?;
+            Ok((status, body))
+        }
     }
 
     impl Mcp {
-        /// SSE の `data:` から JSON-RPC の応答を取り出す。
+        /// JSON-RPC の応答を読む。セッションなしで `json_response` にしているので、SSE ではなく JSON で届く。
         fn message(body: &str) -> TestResult<Value> {
-            let data = body
-                .lines()
-                .filter_map(|line| line.strip_prefix("data: "))
-                .find(|data| !data.trim().is_empty())
-                .ok_or("応答に data がない")?;
-            Ok(serde_json::from_str(data)?)
+            Ok(serde_json::from_str(body).map_err(|e| format!("JSON でない（{e}）: {body}"))?)
         }
 
         async fn connect(token: Option<&str>) -> TestResult<Self> {
             Self::connect_with(Self::new(token).await?, token).await
         }
 
-        /// `initialize` と `notifications/initialized` を送って、ツールを呼べるようにする。
-        async fn connect_with(mut mcp: Self, token: Option<&str>) -> TestResult<Self> {
+        /// クライアントと同じく `initialize` と `notifications/initialized` を送る。
+        /// セッションは作らないので、応答に `mcp-session-id` は無い。
+        async fn connect_with(mcp: Self, token: Option<&str>) -> TestResult<Self> {
             let auth = token.map(|t| format!("Bearer {t}"));
             let headers: Vec<(&str, &str)> =
                 auth.iter().map(|a| ("authorization", a.as_str())).collect();
@@ -235,10 +276,10 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{body}");
             let info = Self::message(&body)?;
             assert_eq!(info["result"]["serverInfo"]["name"], "galley");
-            mcp.session = response_headers
-                .get("mcp-session-id")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned);
+            assert!(
+                !response_headers.contains_key("mcp-session-id"),
+                "{response_headers:?}"
+            );
             let (status, _, _) = mcp
                 .post(
                     &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
@@ -445,6 +486,49 @@ mod tests {
             .await?;
         assert!(is_error);
         assert!(text.contains("X-Author-Name"), "{text}");
+        Ok(())
+    }
+
+    /// Claude Code は ASCII しかヘッダーに入れられないので、日本語の名前はパーセントエンコードして送る。
+    /// エンコードした名前・生の UTF-8・ASCII のどれでも、同じように更新者名として記録する。
+    #[tokio::test]
+    async fn author_name_can_be_percent_encoded() -> TestResult {
+        let mcp = Mcp::connect(None).await?;
+        let cases = [
+            ("encoded", "%E4%BD%90%E8%97%A4", "佐藤"),
+            ("raw", "佐藤", "佐藤"),
+            ("ascii", "Sato", "Sato"),
+            ("percent", "50%off", "50%off"),
+        ];
+        for (slug, header, expected) in cases {
+            let (text, is_error) = mcp
+                .call(
+                    "create_document",
+                    json!({"project":"sales","title":"計画","html":HTML_V1,"slug":slug}),
+                    &[("x-author-name", header)],
+                )
+                .await?;
+            assert!(!is_error, "{text}");
+            let (text, _) = mcp
+                .call(
+                    "get_document",
+                    json!({"project":"sales","document":slug}),
+                    &[],
+                )
+                .await?;
+            let document: Value = serde_json::from_str(&text)?;
+            assert_eq!(document["author_name"], expected, "{header}");
+        }
+
+        // エンコードすれば改行も送れるが、戻した名前も画面の登録と同じ検査を通す
+        let (text, is_error) = mcp
+            .call(
+                "create_document",
+                json!({"project":"sales","title":"計画","html":HTML_V1,"slug":"newline"}),
+                &[("x-author-name", "a%0Ab")],
+            )
+            .await?;
+        assert!(is_error, "{text}");
         Ok(())
     }
 
@@ -734,6 +818,134 @@ mod tests {
         let html = "a".repeat(limit.json_body_limit());
         let (status, _, _) = mcp.post(&create_request(&html), &[AUTHOR]).await?;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        Ok(())
+    }
+
+    /// Lambda では、リクエストごとに別の実行環境に当たりうる。initialize を送った環境とは
+    /// 別のところでも、ツールを呼べる。
+    #[tokio::test]
+    async fn tools_work_without_initialize() -> TestResult {
+        let mcp = Mcp::new(None).await?;
+        let (status, headers, body) = mcp
+            .post(&json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}), &[])
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!headers.contains_key("mcp-session-id"), "{headers:?}");
+        assert_eq!(
+            headers.get("content-type").map(|v| v.as_bytes()),
+            Some(&b"application/json"[..])
+        );
+        let tools = Mcp::message(&body)?;
+        assert_eq!(
+            tools["result"]["tools"].as_array().map(Vec::len),
+            Some(6),
+            "{tools}"
+        );
+
+        let (text, is_error) = mcp
+            .call(
+                "create_document",
+                json!({"project":"sales","title":"事業計画","html":HTML_V1,"slug":"plan"}),
+                &[AUTHOR],
+            )
+            .await?;
+        assert!(!is_error, "{text}");
+        let (text, is_error) = mcp
+            .call(
+                "get_document",
+                json!({"project":"sales","document":"plan"}),
+                &[],
+            )
+            .await?;
+        assert!(!is_error, "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text)?["html"], HTML_V1);
+        Ok(())
+    }
+
+    /// セッションが無いので、通知を受け取る GET（SSE）と、セッションを閉じる DELETE は受け付けない。
+    #[tokio::test]
+    async fn get_and_delete_are_not_allowed() -> TestResult {
+        let mcp = Mcp::new(None).await?;
+        let (status, _) = mcp.get("/mcp", "localhost:8080").await?;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        let response = mcp
+            .router
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("DELETE")
+                    .uri("/mcp")
+                    .header("host", "localhost:8080")
+                    .header("mcp-session-id", "anything")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        Ok(())
+    }
+
+    const METADATA_PATHS: [&str; 2] = [
+        "/.well-known/oauth-protected-resource/mcp",
+        "/.well-known/oauth-protected-resource",
+    ];
+
+    #[tokio::test]
+    async fn oauth_metadata_is_not_found_without_config() -> TestResult {
+        let mcp = Mcp::new(None).await?;
+        for path in METADATA_PATHS {
+            let (status, _) = mcp.get(path, "localhost:8080").await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oauth_metadata_is_returned_when_configured() -> TestResult {
+        let oauth = ProtectedResourceMetadata::parse(
+            Some("https://galley.example.com/mcp"),
+            Some("https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_pool"),
+            Some("openid,galley/mcp"),
+        )?
+        .ok_or("メタデータが無い")?;
+        let mcp = Mcp::with_oauth(oauth).await?;
+        for path in METADATA_PATHS {
+            let (status, body) = mcp.get(path, "localhost:8080").await?;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&body)?,
+                json!({
+                    "resource": "https://galley.example.com/mcp",
+                    "authorization_servers": [
+                        "https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_pool"
+                    ],
+                    "scopes_supported": ["openid", "galley/mcp"],
+                }),
+                "{path}"
+            );
+            // Host の検査はメタデータにも効く
+            let (status, _) = mcp.get(path, "evil.example.com").await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        }
+        Ok(())
+    }
+
+    /// MCP_TOKEN を設定していても、メタデータはトークンなしで読める（トークンを取る前に読むもの）。
+    #[tokio::test]
+    async fn oauth_metadata_does_not_require_mcp_token() -> TestResult {
+        let oauth = ProtectedResourceMetadata::parse(
+            Some("https://galley.example.com/mcp"),
+            Some("https://auth.example.com"),
+            None,
+        )?
+        .ok_or("メタデータが無い")?;
+        let mcp = Mcp::build(
+            Some("s3cret"),
+            HtmlSizeLimit::DEFAULT,
+            Some(Arc::new(oauth)),
+        )
+        .await?;
+        let (status, _) = mcp.get(METADATA_PATHS[0], "localhost:8080").await?;
+        assert_eq!(status, StatusCode::OK);
         Ok(())
     }
 }

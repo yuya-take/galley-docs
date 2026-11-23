@@ -480,10 +480,11 @@ GALLEY_DB=dynamodb://galley AWS_ENDPOINT_URL_DYNAMODB=http://localhost:8000 \
 - AI から登録する方法には、MCP を登録するコマンドとコピーボタンを出す
 
 ```bash
-claude mcp add --transport http galley http://<アプリのホスト>/mcp --header "X-Author-Name: 佐藤"
+claude mcp add --transport http galley http://<アプリのホスト>/mcp --header "X-Author-Name: %E4%BD%90%E8%97%A4"
 ```
 
 - 最後の名前が、AI が登録した資料の更新者として残ることを説明する
+- Claude Code は ASCII 以外の文字をヘッダーに入れられない（`Header 'X-Author-Name' has invalid value` で止まる）ので、日本語の名前は UTF-8 をパーセントエンコードした値で入れる（上の例は「佐藤」）。ASCII だけで `%` を含まない名前はそのまま入れる
 
 接続の手引き（`/connect`）は、サイドバーの「AIから登録する」、空のプロジェクトとプロジェクト設定の「接続の手引き」から開く。
 
@@ -535,6 +536,10 @@ claude mcp add --transport http galley http://<アプリのホスト>/mcp --head
 
 AI エージェントが作った資料を、そのままプロジェクトに保存・更新できるようにする。アプリ本体の `/mcp` で Streamable HTTP として公開する。環境変数 `MCP_TOKEN` を設定した場合だけ、`Authorization: Bearer` でのトークンを必須にする。
 
+セッションは持たない（`Mcp-Session-Id` を返さず、リクエストごとに処理を作って JSON で応答する。GET の SSE と DELETE は 405）。AWS では Lambda の実行環境がリクエストごとに入れ替わりうるため。Docker の構成も同じ動きにする。
+
+AWS の構成では、MCP クライアントは MCP 標準の OAuth で Cognito にログインし、API Gateway の JWT オーソライザーがアクセストークンを確かめる。アプリは、`MCP_OAUTH_RESOURCE`・`MCP_OAUTH_AUTHORIZATION_SERVERS`（・`MCP_OAUTH_SCOPES`）を設定したときだけ、保護されたリソースのメタデータ（RFC 9728）を `/.well-known/oauth-protected-resource/mcp`（と `/.well-known/oauth-protected-resource`）で返す。トークンはアプリでは確かめないので、`MCP_TOKEN` 無しでこれを設定したときは起動時に警告を出す。
+
 MCP クライアントは社内ネットワークから直接つなぐもの（Claude Code など、社内の PC 上で動くもの）を想定する。クラウド側から接続する型のクライアントは社内のアプリに届かない。
 
 - 資料は「プロジェクトの slug」と「資料の slug」で指定する。結果は JSON のテキストで返し、登録・更新の結果には資料ビューアの URL（`/<プロジェクト>/<資料>`）を含める。URL は `GALLEY_APP_URL`（例：`https://galley.example.com`）があればそれを、無ければリクエストの Host に `http://` を付けて作る
@@ -556,7 +561,9 @@ MCP クライアントは社内ネットワークから直接つなぐもの（C
 - Web UI と同じサイズ上限と外部参照の検査を `galley-core` で共通に適用する。ツールの説明文にも「外部リソースを含まない単一 HTML」を明記し、AI が最初から守れるようにする
 - 更新者名は、各自が MCP の接続設定に入れるヘッダー（`X-Author-Name`）で自分の名前を設定する。未設定なら登録を拒否し、画面には常に人の名前が出るようにする。登録元（web / mcp）は source に記録するが、画面には表示しない
   - アーカイブ（`archive_document`）は版を作らず、記録する項目が無いので、更新者名を求めない
-  - 日本語の名前は `HeaderValue::to_str()` では読めない（ASCII 以外を受け付けない）ので、UTF-8 として読む
+  - 日本語の名前は、UTF-8 をパーセントエンコードした値（`X-Author-Name: %E4%BD%90%E8%97%A4`）で受け取り、サーバーで戻す。Claude Code など、ASCII 以外をヘッダーに入れられないクライアントがあるため（#84）。RFC 8187 の形（`X-Author-Name*: UTF-8''...`）はヘッダー名が変わり、設定が読みにくくなるので使わない
+  - 生の UTF-8 の値（ASCII 以外を送れるクライアント）も読む。`%` の後が16進でない、または戻すと UTF-8 にならない値は、エンコードしていない名前としてそのまま使う（`50%off` は `50%off`）。接続の案内は `%` を含む名前を必ずエンコードするので、案内から作った値は元の名前に戻る
+  - 取り決め（ヘッダー名、エンコードと戻し方）は `galley_web::author_header` にまとめ、接続の案内と MCP の両方から使う
 
 ## 認証と権限
 

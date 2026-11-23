@@ -1,13 +1,12 @@
 //! AI（Claude Code など）に Galley の MCP を登録するコマンド。空のプロジェクトの案内と、
 //! 接続の手引き（`/connect`）で使う。
 
-use crate::AppUrl;
+use crate::{AppUrl, author_header};
 
 /// 名前が未設定のときにコマンドへ入れる文字。
 pub const AUTHOR_PLACEHOLDER: &str = "あなたの名前";
 
-/// 更新者名を渡すヘッダー（`crates/server` の MCP が読む）。
-pub const AUTHOR_HEADER: &str = "X-Author-Name";
+pub use author_header::AUTHOR_HEADER;
 
 /// `MCP_TOKEN` を設定したサーバーが求めるヘッダー。
 pub const TOKEN_HEADER: &str = "Authorization";
@@ -22,9 +21,11 @@ pub fn url(app_url: &AppUrl, host: Option<&str>) -> String {
         .unwrap_or_else(|| "http://<アプリのホスト>/mcp".to_owned())
 }
 
-/// ヘッダーに入れる更新者名（未設定なら [`AUTHOR_PLACEHOLDER`]）。
-pub fn author_value(author: Option<&str>) -> &str {
-    author.unwrap_or(AUTHOR_PLACEHOLDER)
+/// ヘッダーに入れる更新者名。Claude Code などは ASCII 以外をヘッダーに入れられないので、
+/// 日本語の名前はパーセントエンコードする（[`author_header::encode`]）。未設定なら
+/// [`AUTHOR_PLACEHOLDER`]（読む人が置き換える文字なので、エンコードしない）。
+pub fn author_value(author: Option<&str>) -> String {
+    author.map_or_else(|| AUTHOR_PLACEHOLDER.to_owned(), author_header::encode)
 }
 
 /// Claude Code に登録するコマンド。`author` は更新者名（`X-Author-Name` ヘッダー）。
@@ -65,7 +66,7 @@ pub fn json_config(mcp_url: &str, author: Option<&str>) -> String {
 }}"#,
         url = json_string(mcp_url),
         header = json_string(AUTHOR_HEADER),
-        author = json_string(author_value(author)),
+        author = json_string(&author_value(author)),
     )
 }
 
@@ -109,12 +110,21 @@ mod tests {
     fn command_matches_the_design() {
         assert_eq!(
             claude_code("http://galley.internal:8080/mcp", Some("佐藤")),
-            r#"claude mcp add --transport http galley http://galley.internal:8080/mcp --header "X-Author-Name: 佐藤""#
+            r#"claude mcp add --transport http galley http://galley.internal:8080/mcp --header "X-Author-Name: %E4%BD%90%E8%97%A4""#
         );
         assert_eq!(
             claude_code("http://localhost:8080/mcp", None),
             r#"claude mcp add --transport http galley http://localhost:8080/mcp --header "X-Author-Name: あなたの名前""#
         );
+    }
+
+    #[test]
+    fn keeps_ascii_names_readable() {
+        assert_eq!(
+            claude_code("http://localhost:8080/mcp", Some("Sato")),
+            "claude mcp add --transport http galley http://localhost:8080/mcp --header \"X-Author-Name: Sato\""
+        );
+        assert_eq!(author_value(Some("50%off")), "50%25off");
     }
 
     #[test]
@@ -131,7 +141,7 @@ mod tests {
     fn token_command_adds_authorization_header() {
         assert_eq!(
             claude_code_with_token("http://localhost:8080/mcp", Some("佐藤")),
-            r#"claude mcp add --transport http galley http://localhost:8080/mcp --header "X-Author-Name: 佐藤" --header "Authorization: Bearer <トークン>""#
+            r#"claude mcp add --transport http galley http://localhost:8080/mcp --header "X-Author-Name: %E4%BD%90%E8%97%A4" --header "Authorization: Bearer <トークン>""#
         );
     }
 
@@ -157,7 +167,7 @@ mod tests {
       "type": "http",
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "X-Author-Name": "佐藤"
+        "X-Author-Name": "%E4%BD%90%E8%97%A4"
       }
     }
   }
