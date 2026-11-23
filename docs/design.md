@@ -445,6 +445,10 @@ claude mcp add --transport http galley http://<アプリのホスト>/mcp --head
 
 AI エージェントが作った資料を、そのままプロジェクトに保存・更新できるようにする。アプリ本体の `/mcp` で Streamable HTTP として公開する。環境変数 `MCP_TOKEN` を設定した場合だけ、`Authorization: Bearer` でのトークンを必須にする。
 
+セッションは持たない（`Mcp-Session-Id` を返さず、リクエストごとに処理を作って JSON で応答する。GET の SSE と DELETE は 405）。AWS では Lambda の実行環境がリクエストごとに入れ替わりうるため。Docker の構成も同じ動きにする。
+
+AWS の構成では、MCP クライアントは MCP 標準の OAuth で Cognito にログインし、API Gateway の JWT オーソライザーがアクセストークンを確かめる。アプリは、`MCP_OAUTH_RESOURCE`・`MCP_OAUTH_AUTHORIZATION_SERVERS`（・`MCP_OAUTH_SCOPES`）を設定したときだけ、保護されたリソースのメタデータ（RFC 9728）を `/.well-known/oauth-protected-resource/mcp`（と `/.well-known/oauth-protected-resource`）で返す。トークンはアプリでは確かめないので、`MCP_TOKEN` 無しでこれを設定したときは起動時に警告を出す。
+
 MCP クライアントは社内ネットワークから直接つなぐもの（Claude Code など、社内の PC 上で動くもの）を想定する。クラウド側から接続する型のクライアントは社内のアプリに届かない。
 
 - 資料は「プロジェクトの slug」と「資料の slug」で指定する。結果は JSON のテキストで返し、登録・更新の結果には資料ビューアの URL（`/<プロジェクト>/<資料>`）を含める。URL は `GALLEY_APP_URL`（例：`https://galley.example.com`）があればそれを、無ければリクエストの Host に `http://` を付けて作る
