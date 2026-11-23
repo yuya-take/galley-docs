@@ -8,7 +8,7 @@ paths:
 
 ## 構成
 
-- **DB**: SQLite（WAL モード）1ファイル。`/data` ボリュームに置く
+- **DB**: SQLite（WAL モード）1ファイル。`/data` ボリュームに置く（既定）。AWS では DynamoDB（`GALLEY_DB=dynamodb://<テーブル名>`。下の「DynamoDB」）
 - **ORM**: Toasty
 - **資料の実体**: DB には入れず、`object_store` でファイル（既定は `/data/blobs/ab/cd/<hash>.html`、置き場所は `BlobHash::storage_key`）として保存する。DB はハッシュだけ持つ
 - 書き込みは直列になるが、資料の更新頻度なら問題にならない前提
@@ -60,3 +60,17 @@ slug は英小文字・数字・ハイフンだけ。資料の slug はファイ
 - SQLite ドライバーは接続ごとのタスクの中で同期的に SQLite を呼ぶので、ロックを待つ接続が tokio のワーカーを塞ぐ。同時の書き込みが重なると、ロックを持つ接続が進めずに「database is locked」になる。書き込みは必ず `WriteLock` を通す
 - `TransactionMode` は `toasty` から再公開されていないので `toasty-core` から使う
 - 一意制約の違反は Toasty が区別しないので、SQLite のメッセージ（`UNIQUE constraint failed`）で `RepositoryError::Conflict` に変換する
+
+## DynamoDB
+
+AWS で使う（`crates/core/src/adapter/dynamodb/`）。テーブルの形と読み書きの方法は `docs/design.md` の「DynamoDB のテーブル」に書き、変えたらそこも直す（Terraform がその形でテーブルを作る）。
+
+- **テーブル**: 1つ（`pk`・`sk` とも文字列、GSI なし、オンデマンド）。アプリはテーブルを作らない（`DynamoDbDatabase::create_table` はテストと手元の DynamoDB Local 用）。マイグレーションは無いので、項目の形を変えるときは古い形も読めるようにする
+- **読み出し**: すべて強い整合性で読む。Query は `Table::query` を使い、`LastEvaluatedKey` を最後までたどる
+- **一意性**: `attribute_not_exists(pk)` の条件付き書き込み。まとめて保存するものは `Table::transact`（TransactWriteItems、100 件まで）で1回に書く。取り消し（条件の失敗・`TransactionConflict`）は `RepositoryError::Conflict` になり、ユースケースがやり直す
+- **式の属性名**: DynamoDB の予約語（`name`・`size`・`number`・`source` など）とぶつかるので、条件式・更新式の属性名は必ず `#` のプレースホルダーで渡す（`Expression::name`）。使わないプレースホルダーを渡すと DynamoDB が断る
+- **条件の無い更新は項目を作る**: `UpdateItem` は項目が無ければ作ってしまうので、既存の項目を変えるときは `Expression::exists()` などの条件を付ける
+- **版は不変**: 版の写し（資料と番号、版の ID、ブロブ）は、同じトランザクションで書いて同じトランザクションで消す。資料の項目の `current_revision_*` は版の追加と同じトランザクションで書く
+- **ブロブの参照**: `ref_count` を版の追加で増やし、物理削除で読んだ値を条件に減らす（楽観ロック）
+- **集合の属性**: 文字列の集合（SS）は使わず、キーを値にしたマップにする（DynamoDB Local 3.3 は、日本語の文字列の集合への `ADD` を正しく扱えない）
+- **テスト**: `crates/core/tests` の結合テストは `GALLEY_TEST_DYNAMODB_ENDPOINT` があれば DynamoDB Local で動く（`tests/common`）。リポジトリを変えたら、SQLite と DynamoDB Local の両方で流す

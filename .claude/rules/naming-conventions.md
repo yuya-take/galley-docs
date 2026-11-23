@@ -15,7 +15,7 @@ Rust の標準（[RFC 430](https://rust-lang.github.io/rfcs/0430-finalizing-nami
 - **変換**: `as_`（コストなし）、`to_`（コストあり）、`into_`（所有権を消費）、`from_` / `From` 実装
 - **ゲッター**: `get_` を付けない（`document.title()`）
 - **エラー型**: `〜Error`（`UploadError`、`CoreError`）
-- **リポジトリ**: トレイトは `〜Repository`（domain）、実装は `Toasty〜Repository`（adapter）
+- **リポジトリ**: トレイトは `〜Repository`（domain）、実装は `Toasty〜Repository`（SQLite）・`DynamoDb〜Repository`（DynamoDB）（adapter）
 - **ストレージ**: トレイトは `BlobStore`（domain）、実装は `ObjectStoreBlobStore`（adapter）
 - **ユースケース**: 動詞で始める構造体（`RegisterRevision`、`RevertToRevision`）に `execute` メソッド
 

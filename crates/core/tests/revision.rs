@@ -1,9 +1,14 @@
 //! 資料の登録・新しい版の追加・過去の版に戻す処理を、DB とストレージを使って確かめる。
+//! SQLite と DynamoDB Local のどちらでも動く（`common`）。
 
-use std::{error::Error, path::PathBuf, sync::Arc};
+mod common;
+
+use std::{error::Error, sync::Arc};
+
+use common::TestDatabase;
 
 use galley_core::{
-    adapter::{blob_store::ObjectStoreBlobStore, sqlite::SqliteDatabase},
+    adapter::blob_store::ObjectStoreBlobStore,
     app::{
         document::{ArchiveDocument, CreateDocument, CreateDocumentInput, SlugSource},
         error::AppError,
@@ -15,9 +20,9 @@ use galley_core::{
     },
     domain::{
         blob::{BlobHash, BlobStore},
-        document::{DocumentError, DocumentRepository},
+        document::DocumentError,
         project::{Project, ProjectError},
-        revision::{Revision, RevisionNumber, RevisionRepository, RevisionSource},
+        revision::{Revision, RevisionNumber, RevisionSource},
         shared::DocumentId,
         upload::{HtmlSizeLimit, UploadError},
     },
@@ -26,41 +31,23 @@ use galley_core::{
 type TestResult = Result<(), Box<dyn Error>>;
 
 struct Fixture {
-    database: SqliteDatabase,
+    database: TestDatabase,
     blobs: Arc<ObjectStoreBlobStore>,
     project: Project,
-    _dir: Option<TempDir>,
-}
-
-/// テストごとの一時ディレクトリ。終わったら消す。
-struct TempDir(PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 impl Fixture {
     async fn new() -> Result<Self, Box<dyn Error>> {
-        let database = SqliteDatabase::in_memory().await?;
-        Self::with_database(database, None).await
+        Self::with_database(TestDatabase::new().await?).await
     }
 
     /// ファイルの DB（同時の書き込みを確かめる）。
     async fn with_file() -> Result<Self, Box<dyn Error>> {
-        let dir =
-            TempDir(std::env::temp_dir().join(format!("galley-test-{}", uuid::Uuid::new_v4())));
-        std::fs::create_dir_all(&dir.0)?;
-        let database = SqliteDatabase::open(&dir.0.join("galley.db")).await?;
-        Self::with_database(database, Some(dir)).await
+        Self::with_database(TestDatabase::file().await?).await
     }
 
-    async fn with_database(
-        database: SqliteDatabase,
-        dir: Option<TempDir>,
-    ) -> Result<Self, Box<dyn Error>> {
-        let project = CreateProject::new(Arc::new(database.projects()))
+    async fn with_database(database: TestDatabase) -> Result<Self, Box<dyn Error>> {
+        let project = CreateProject::new(database.projects())
             .execute(&ProjectInput {
                 slug: "sales".to_owned(),
                 name: "営業部".to_owned(),
@@ -72,7 +59,6 @@ impl Fixture {
             database,
             blobs: Arc::new(ObjectStoreBlobStore::in_memory()),
             project,
-            _dir: dir,
         })
     }
 
@@ -82,8 +68,8 @@ impl Fixture {
 
     fn create_document_with_limit(&self, limit: HtmlSizeLimit) -> CreateDocument {
         CreateDocument::new(
-            Arc::new(self.database.projects()),
-            Arc::new(self.database.documents()),
+            self.database.projects(),
+            self.database.documents(),
             self.blobs.clone(),
             limit,
         )
@@ -95,18 +81,15 @@ impl Fixture {
 
     fn add_revision_with_limit(&self, limit: HtmlSizeLimit) -> AddRevision {
         AddRevision::new(
-            Arc::new(self.database.documents()),
-            Arc::new(self.database.revisions()),
+            self.database.documents(),
+            self.database.revisions(),
             self.blobs.clone(),
             limit,
         )
     }
 
     fn revert(&self) -> RevertToRevision {
-        RevertToRevision::new(
-            Arc::new(self.database.documents()),
-            Arc::new(self.database.revisions()),
-        )
+        RevertToRevision::new(self.database.documents(), self.database.revisions())
     }
 
     async fn create(&self, file_name: &str, html: &str) -> Result<RegisteredRevision, AppError> {
@@ -194,7 +177,7 @@ async fn create_falls_back_to_untitled() -> TestResult {
 #[tokio::test]
 async fn create_rejects_archived_or_missing_project() -> TestResult {
     let fx = Fixture::new().await?;
-    ArchiveProject::new(Arc::new(fx.database.projects()))
+    ArchiveProject::new(fx.database.projects())
         .execute(fx.project.id)
         .await?;
     assert!(matches!(
@@ -334,7 +317,7 @@ async fn same_content_shares_one_blob() -> TestResult {
 async fn add_revision_rejects_archived_or_missing_document() -> TestResult {
     let fx = Fixture::new().await?;
     let created = fx.create("plan.html", V1).await?;
-    ArchiveDocument::new(Arc::new(fx.database.documents()))
+    ArchiveDocument::new(fx.database.documents())
         .execute(created.document.id)
         .await?;
     assert!(matches!(
@@ -355,7 +338,7 @@ async fn add_revision_rejects_document_in_archived_project() -> TestResult {
     let fx = Fixture::new().await?;
     let created = fx.create("plan.html", V1).await?;
     // 資料はアーカイブせず、プロジェクトだけアーカイブする
-    ArchiveProject::new(Arc::new(fx.database.projects()))
+    ArchiveProject::new(fx.database.projects())
         .execute(fx.project.id)
         .await?;
     assert!(matches!(
@@ -366,7 +349,7 @@ async fn add_revision_rejects_document_in_archived_project() -> TestResult {
     assert_eq!(fx.blobs.get(&BlobHash::of(V2.as_bytes())).await?, None);
 
     // プロジェクトを戻せば追加できる
-    RestoreProject::new(Arc::new(fx.database.projects()))
+    RestoreProject::new(fx.database.projects())
         .execute(fx.project.id)
         .await?;
     let added = fx.add(created.document.id, V2).await?;
@@ -433,7 +416,7 @@ async fn revert_rejects_archived_document() -> TestResult {
     let fx = Fixture::new().await?;
     let created = fx.create("plan.html", V1).await?;
     fx.add(created.document.id, V2).await?;
-    ArchiveDocument::new(Arc::new(fx.database.documents()))
+    ArchiveDocument::new(fx.database.documents())
         .execute(created.document.id)
         .await?;
     assert!(matches!(
@@ -450,7 +433,7 @@ async fn revert_rejects_document_in_archived_project() -> TestResult {
     let fx = Fixture::new().await?;
     let created = fx.create("plan.html", V1).await?;
     fx.add(created.document.id, V2).await?;
-    ArchiveProject::new(Arc::new(fx.database.projects()))
+    ArchiveProject::new(fx.database.projects())
         .execute(fx.project.id)
         .await?;
     assert!(matches!(
@@ -474,7 +457,7 @@ async fn find_revision_defaults_to_latest() -> TestResult {
     let fx = Fixture::new().await?;
     let created = fx.create("plan.html", V1).await?;
     let added = fx.add(created.document.id, V2).await?;
-    let find = FindRevision::new(Arc::new(fx.database.revisions()));
+    let find = FindRevision::new(fx.database.revisions());
 
     assert_eq!(find.execute(&added.document, None).await?, added.revision);
     assert_eq!(
@@ -496,7 +479,7 @@ async fn list_revisions_returns_newest_first() -> TestResult {
     fx.add(created.document.id, V2).await?;
     fx.add(created.document.id, V1).await?;
     let latest = fx.add(created.document.id, V2).await?;
-    let list = ListRevisions::new(Arc::new(fx.database.revisions()));
+    let list = ListRevisions::new(fx.database.revisions());
 
     let numbers = |revisions: Vec<Revision>| {
         revisions

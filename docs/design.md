@@ -109,7 +109,7 @@ docker run -d -p 8080:8080 -p 8081:8081 -v galley-data:/data ghcr.io/yuya-take/g
 | 外側のルーター | [axum](https://github.com/tokio-rs/axum)。`/mcp`、資料配信、Host 検査などの共通処理を持つ |
 | 画面 | [Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat)（サーバー描画。動きは `$()` 式で付ける）。Axum の `fallback_service` に載せる |
 | MCP | [rmcp](https://crates.io/crates/rmcp)（Streamable HTTP） |
-| DB | SQLite（WAL モード）+ [Toasty](https://github.com/tokio-rs/toasty) |
+| DB | SQLite（WAL モード）+ [Toasty](https://github.com/tokio-rs/toasty)（既定）。AWS では DynamoDB（[aws-sdk-dynamodb](https://crates.io/crates/aws-sdk-dynamodb)。「DynamoDB のテーブル」） |
 | ファイル保存 | object_store クレート（既定はローカル、設定で S3 互換に切替） |
 | アップロード処理 | sha2、HTML の解析に lol_html、CSS の解析に cssparser、文字参照の復元に htmlize |
 | ログ | tracing |
@@ -120,6 +120,8 @@ SQLite は書き込みが1本ずつ直列になるが、資料の更新頻度な
 待ち受けアドレスは環境変数 `GALLEY_APP_ADDR`（既定 `0.0.0.0:8080`）と `GALLEY_VIEWER_ADDR`（既定 `0.0.0.0:8081`）で変えられる。資料配信に別のホスト名を割り当てるときは `GALLEY_VIEWER_URL` を指定する（「表示用オリジン」）。ほかの PC から使うときは、アクセスに使うホスト名を `ALLOWED_HOSTS` に指定する（「ネットワークの前提と、外部サイトからの攻撃への対策」）。DB（`galley.db`）と資料の実体を置くディレクトリは `GALLEY_DATA_DIR`（既定はカレントディレクトリの `data`、Docker イメージでは `/data`）。資料の実体はその下の `blobs/ab/cd/<hash>.html` に置く。
 
 資料の実体を S3 互換のストレージに置くときは `GALLEY_BLOB_STORE=s3://<バケット>/<プレフィックス>`（プレフィックスは省略可）を指定する。認証情報とエンドポイントは `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_REGION`、`AWS_ENDPOINT`（MinIO など）、`AWS_ALLOW_HTTP` の環境変数で渡す。`AWS_ALLOW_HTTP` は通信が暗号化されないので、同じマシンや閉じたネットワークの MinIO に使うときだけ有効にする。DB は S3 に置かないので、`GALLEY_DATA_DIR` は引き続き必要。
+
+DB は `GALLEY_DB` で選ぶ。指定しなければ SQLite（`<GALLEY_DATA_DIR>/galley.db`）、`GALLEY_DB=dynamodb://<テーブル名>` なら DynamoDB を使う（AWS で動かすとき。「DynamoDB のテーブル」）。DynamoDB の認証情報とリージョンは AWS の標準の設定（環境変数、`~/.aws` のプロファイル・SSO、Lambda のロール）から取り、DynamoDB Local などに向けるときは `AWS_ENDPOINT_URL_DYNAMODB` を指定する。
 
 実体は読み出すたびにハッシュを計算し直し、中身が書き換わっていればエラーにする。
 
@@ -148,7 +150,7 @@ app（crates/core/src/app）       ユースケース（登録、戻す など�
         ↓
 domain（crates/core/src/domain） エンティティ、値オブジェクト、アップロード検査、
         ↑                         リポジトリとストレージのトレイト
-adapter（crates/core/src/adapter）Toasty（SQLite）と object_store の実装
+adapter（crates/core/src/adapter）Toasty（SQLite）、DynamoDB、object_store の実装
 ```
 
 - domain は I/O をせず、Toasty・object_store・Axum・Topcoat・rmcp・tokio に依存しない
@@ -271,14 +273,98 @@ sequenceDiagram
 ### 削除
 
 - プロジェクトと資料は論理削除（archived_at）にして、後から戻せるようにする
-- 機密を誤って登録したときなど、本当に消したい資料と版は、コンテナ内で実行するコマンド（`galley purge <プロジェクト>/<資料>[/v/<番号>]`）でだけ物理削除できる。ログインが無いので、画面と MCP には置かない
+- 機密を誤って登録したときなど、本当に消したい資料と版は、コンテナ内で実行するコマンド（`galley purge <プロジェクト>/<資料>[/v/<番号>]`）でだけ物理削除できる。ログインが無いので、画面と MCP には置かない。AWS では手元から DynamoDB と S3 に向けて実行する（`deploy/aws/README.md`）
   - 資料ごと消すと、資料とすべての版を消す。アーカイブした資料・プロジェクトも消せる
   - 最新の版（現在版）は、版だけでは消せない。次の版の番号は現在版 + 1 なので、最新の版を消すと、次の版が消した番号を使い直してしまうため。消した版の番号は欠番になる
   - 消した版のブロブのうち、どの版からも参照されなくなったものも消す。同じ内容の版（「この版に戻す」で作った版、別の資料に登録した同じ HTML）が残っていれば残し、消す前にその版を表示する
   - DB から版と資料、ブロブの情報を1トランザクションで消してコミットしてから、ストレージの実体を消す。実体を消す直前にも参照が無いことを確かめ、その間に同じ内容の版が登録されていれば残す
   - サーバーとは別のプロセスで動くので、書き込みは `BEGIN IMMEDIATE` で SQLite のロックを取り、サーバーの書き込みと順番を待ち合う。版の追加や「この版に戻す」は、保存のトランザクションの中で資料と戻す元のブロブの情報が残っているかを確かめ、読んだあとに消されていれば断る
-  - 残る競合：消しているのとまったく同時に、消すブロブと同じ内容の HTML を登録すると、登録側は実体がすでにあると見て書き込みを飛ばす。その版の保存が、実体を消す直前の確認より後になると、その版の実体が無くなる
+  - DynamoDB では、ブロブの参照の数（`ref_count`）を楽観ロックにして、条件付き書き込みでサーバーの書き込みとぶつかりを見分け、読み直してやり直す。1 回のトランザクションは 100 件までなので、版の多い資料は古い版から分けて消す（「DynamoDB のテーブル」）
+  - 残る競合：消しているのとまったく同時に、消すブロブと同じ内容の HTML を登録すると、登録側は実体がすでにあると見て書き込みを飛ばす。その版の保存が、実体を消す直前の確認より後になると、その版の実体が無くなる（SQLite と DynamoDB で同じ）
 - どこからも参照されないブロブ（ストレージに書いたあと、DB の保存に失敗したもの）を掃除するジョブは、将来追加する
+
+## DynamoDB のテーブル
+
+AWS（`deploy/aws/`）では DB に DynamoDB を使う（PR #75 で決定、#76）。`GALLEY_DB=dynamodb://<テーブル名>` で選び、ユースケースと画面は SQLite のときと同じものを使う。実装は `crates/core/src/adapter/dynamodb/`。
+
+Toasty 0.11 の DynamoDB ドライバーは、トランザクション（TransactWriteItems）に対応しておらず、マイグレーションも未実装なので使わず、aws-sdk-dynamodb で直接書く。
+
+### テーブルの形
+
+テーブルは1つにまとめる。Terraform（#81）はこの形で作る。
+
+| 項目 | 値 |
+| --- | --- |
+| キー | パーティションキー `pk`（文字列）、ソートキー `sk`（文字列） |
+| GSI・LSI | 持たない（どの読み出しもベーステーブルを強い整合性で読む） |
+| 課金 | オンデマンド（`PAY_PER_REQUEST`） |
+| 推奨 | ポイントインタイムリカバリ（バックアップ）、削除保護 |
+| アプリのロールに要る権限 | `dynamodb:GetItem`・`PutItem`・`UpdateItem`・`DeleteItem`・`Query`（TransactWriteItems は、中の書き込みのそれぞれの権限で動く）。テーブルはアプリでは作らないので `CreateTable` は要らない |
+
+項目は次のとおり。ID は UUID の文字列（ハイフン区切り）、日時は SQLite と同じ小数9桁固定の RFC 3339（UTC）の文字列にする。値が無いもの（`archived_at` が無いなど）は属性を置かない。
+
+| 項目 | `pk` | `sk` | 主な属性 |
+| --- | --- | --- | --- |
+| プロジェクト | `PROJECTS` | `PROJECT#<id>` | id, slug, name, description, color, archived_at, created_at |
+| プロジェクトの slug の印 | `PROJECTS` | `PROJECT_SLUG#<slug>` | project_id |
+| 資料 | `PROJECT#<project_id>` | `DOCUMENT#<slug>` | id, project_id, slug, title, current_revision_id, current_revision_number, current_revision_message, current_revision_author_name, author_names, archived_at, created_at, updated_at |
+| 資料の印 | `DOCUMENT#<id>` | `DOCUMENT` | document_id, project_id, slug |
+| 版 | `DOCUMENT#<document_id>` | `REVISION#<番号を 10 桁にそろえたもの>` | id, document_id, number, blob_hash, message, author_name, source, restored_from_number, created_at |
+| 版の写し（ID から） | `REVISION#<id>` | `REVISION` | 版と同じ |
+| 版の写し（ブロブから） | `BLOB#<hash>` | `REVISION#<id>` | 版と同じ |
+| ブロブ | `BLOB#<hash>` | `BLOB` | hash, size, created_at, ref_count |
+
+- **資料の slug は変わらない**ので、プロジェクトのパーティションの `sk` にして、そのまま一意性を守る。資料を ID で引くときは、資料の印（プロジェクトと slug。これも変わらない）を読んでから資料を読む
+- **版は作ったあと変わらない**ので、引き方ごとに同じ属性の写しを3つ置く（資料と番号、版の ID、ブロブ）。3つは同じトランザクションで書き、同じトランザクションで消す
+- **資料の一覧のために**、資料の項目に現在版の番号・変更メモ・更新者（`current_revision_*`）と、版を登録したことがある人（`author_names`。キーを名前、値を `true` にしたマップ）を持つ。現在版は版の追加でしか変わらないので、版の追加と同じトランザクションで書けば食い違わない。`author_names` を文字列の集合（SS）にしないのは、DynamoDB Local（3.3）が日本語の文字列の集合への `ADD` を正しく扱えないため
+- **ブロブの `ref_count`** は、そのブロブを使っている版の数。版の追加で 1 増やし、物理削除で減らす
+
+### 読み書き
+
+| 処理 | DynamoDB での形 |
+| --- | --- |
+| プロジェクトの一覧 | `PROJECTS` の Query（`PROJECT#` で始まるもの）。作成順への並べ替えはアプリで行う |
+| プロジェクトごとの資料の件数 | プロジェクトごとの資料の Query を並行して行い、アーカイブしていない資料を数える |
+| 資料の一覧（すべての資料・プロジェクトの資料） | 対象のプロジェクトの資料の Query を並行して行い、絞り込み（資料名の部分一致は SQLite の LIKE と同じく ASCII の英字だけ大文字と小文字を区別しない、更新日時、`author_names` での「自分が更新」）・並べ替え・件数の制限をアプリで行う |
+| slug の前方一致（資料の slug を選ぶ） | 資料の `sk` の前方一致の Query |
+| 資料の版の一覧 | 資料のパーティションの Query（`REVISION#` で始まるもの。新しい順は逆順に読む） |
+| ブロブを使っている版 | ブロブのパーティションの Query（`REVISION#` で始まるもの） |
+
+- どの読み出しも強い整合性（`ConsistentRead`）で行う。書いた直後に一覧や画面を開いても見える
+- Query は 1 回に 1 MB までしか返さないので、`LastEvaluatedKey` をたどって最後まで読む
+- 一覧は対象のプロジェクトの資料をすべて読むので、資料の数に比例して読み出しの量（読み出しの単位と時間）が増える。チームで使う規模（数千件）を想定し、それを超えたら GSI での並べ替えを検討する
+
+### 一意性とトランザクション
+
+- プロジェクトの slug・資料の slug・版の番号は、`attribute_not_exists(pk)` の条件付き書き込みで守る。先に使われていれば `RepositoryError::Conflict` を返し、SQLite の一意制約の違反と同じに扱う（資料は slug を選び直し、版は資料を読み直してやり直す）
+- 資料と第1版（資料、資料の印、版の写し3つ、ブロブ）、版の追加（版の写し3つ、資料の現在版、ブロブ）は、それぞれ1回の TransactWriteItems で書く。版の追加は、資料があること（物理削除されていないこと）と、資料の現在版の番号が新しい版より小さいことを条件にする。戻す操作はブロブを書かないので、ブロブの項目があること（戻す元の版が物理削除されていないこと）を条件にして `ref_count` を増やす
+- プロジェクトの slug を変えるときは、古い印を消し、新しい印を条件付きで作るのを、プロジェクトの保存と同じトランザクションで行う
+- トランザクションが条件に合わずに、または同時のトランザクションとぶつかって（`TransactionConflict`）取り消されたときも `Conflict` にして、ユースケースのやり直しに任せる
+
+### 物理削除
+
+- 消す版のブロブごとに `ref_count` を読み、読んだ値のままであることを条件に、減らすか（ほかの版も使っている）、ブロブの項目を消す（どの版も使わなくなる）。読んでから書くまでの間に同じブロブの版が足されると条件に合わず、読み直してやり直す（5 回まで）
+- 資料ごと消すときは、版・資料・資料の印を1回のトランザクションで消す。最後に消す資料の項目は、現在版が読んだときのままであることを条件にする（読んだあとに足された版も読み直して消す）
+- 1 回のトランザクションは 100 件までなので、収まらない資料（版が 25 個ほどを超えるもの）は、現在版を除いた古い版から収まる分ずつ消し、最後に現在版と資料を消す。途中で止まっても、古い版を版だけ消したのと同じ状態になり、もう一度実行すれば続きを消せる。SQLite と違って1回で消えるとは限らないが、途中の状態でも画面と MCP は普通に動く
+- 版だけ消すときは、資料の `author_names` を残る版から数え直す（資料の現在版が読んだときのままであることを条件にする）
+
+### 手元で使う
+
+DynamoDB Local でテーブルを作れば、手元でも DynamoDB で動かせる。
+
+```bash
+docker run --rm -d -p 8000:8000 amazon/dynamodb-local:3.3.2
+aws dynamodb create-table --endpoint-url http://localhost:8000 \
+  --table-name galley \
+  --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
+  --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST
+GALLEY_DB=dynamodb://galley AWS_ENDPOINT_URL_DYNAMODB=http://localhost:8000 \
+  AWS_REGION=ap-northeast-1 AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local \
+  cargo run -p galley-server
+```
+
+`crates/core` の結合テスト（`repository`・`revision`・`purge`・`dynamodb`）は、`GALLEY_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` を付けると DynamoDB Local で動く（テストごとに新しいテーブルを作り、1 回の Query で 2 件ずつ読んでページをたどる処理も通す）。CI の test ジョブでも、DynamoDB Local のサービスコンテナで流す。
 
 ## 画面設計（MVP）
 
@@ -510,6 +596,8 @@ MCP クライアントは社内ネットワークから直接つなぐもの（C
 | 資料内のリンクは iframe の中で遷移させる（`allow-popups` は付けない） | 資料の隔離の方針を緩めない。外部のリンクは「別タブで開く」で資料を単独で開けば動く | #22 |
 | 物理削除はコンテナ内で実行するコマンドだけにする | ログインがないので、画面や MCP に置くと誰でも消せてしまう。サーバーに入れる管理者だけが消せるようにする | #23 |
 | ライセンスは MIT と Apache-2.0 のデュアル | Rust で一般的な形。Apache-2.0 の特許の取り決めも選べる | #24 |
+| AWS では DB を DynamoDB にし、`GALLEY_DB` で選ぶ。Docker の既定は SQLite のまま | Lambda から複数の実行環境で書いても壊れず、使っていないときの費用が 0 で VPC も要らない。adapter の中に閉じるので、ユースケースと画面は変えない | PR #75、#76 |
+| DynamoDB は aws-sdk-dynamodb で直接書き、テーブルは1つ（GSI なし）にする | Toasty 0.11 の DynamoDB ドライバーはトランザクションに対応していない。GSI は結果整合なので、書いた直後の一覧や物理削除の参照の確認に使えない。チームの規模なら、プロジェクトごとの Query とアプリの中の絞り込みで足りる | #76 |
 
 ## 未決事項
 

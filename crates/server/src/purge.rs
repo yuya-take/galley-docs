@@ -1,7 +1,9 @@
 //! `galley purge`：資料ごと、または版を1つ、完全に消す。
 //!
-//! コンテナの中で、動いているサーバーと同じ DB とストレージを開いて消す。サーバーとは別のプロセスなので、
-//! 書き込みは SQLite のロック（`BEGIN IMMEDIATE`）で順番を待つ。消す前に消すものを表示して確認を求める。
+//! 動いているサーバーと同じ DB とストレージを開いて消す（Docker ではコンテナの中で、AWS では手元から
+//! DynamoDB と S3 に向けて実行する）。サーバーとは別のプロセスなので、書き込みは SQLite のロック
+//! （`BEGIN IMMEDIATE`）で順番を待つか、DynamoDB の条件付き書き込みで読み直してやり直す。
+//! 消す前に消すものを表示して確認を求める。
 //! 消した記録は標準出力と tracing（標準エラー）に出す。サーバーのログ（`docker logs`）には入らない。
 
 use std::{
@@ -12,7 +14,6 @@ use std::{
 
 use anyhow::{Context as _, bail};
 use galley_core::{
-    adapter::sqlite::SqliteDatabase,
     app::document::{PurgeDocument, PurgeOutcome, PurgePlan, RevisionLocation},
     domain::{
         blob::BlobHash,
@@ -22,12 +23,15 @@ use galley_core::{
 use jiff::tz::TimeZone;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::PurgeArgs;
+use crate::{
+    cli::PurgeArgs,
+    database::{self, DatabaseConfig},
+};
 
 /// 既定のログ。消した記録（このモジュールの info）だけを出し、DB を開くときのログなどは出さない。
 const DEFAULT_LOG_FILTER: &str = "warn,galley::purge=info";
 
-/// サーバーと同じ環境変数（`GALLEY_DATA_DIR`、`GALLEY_BLOB_STORE`）で DB とストレージを開いて消す。
+/// サーバーと同じ環境変数（`GALLEY_DB`、`GALLEY_DATA_DIR`、`GALLEY_BLOB_STORE`）で DB とストレージを開いて消す。
 pub async fn run(args: PurgeArgs) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -41,20 +45,22 @@ pub async fn run(args: PurgeArgs) -> anyhow::Result<()> {
     let data_dir = PathBuf::from(
         std::env::var("GALLEY_DATA_DIR").unwrap_or_else(|_| crate::DEFAULT_DATA_DIR.into()),
     );
-    let db_path = data_dir.join("galley.db");
-    // 開くと空の DB を作ってしまうので、無ければ止める（GALLEY_DATA_DIR の指定違いなど）
-    if !db_path.is_file() {
+    let config = DatabaseConfig::from_env(&data_dir)?;
+    // SQLite は開くと空の DB を作ってしまうので、無ければ止める（GALLEY_DATA_DIR の指定違いなど）
+    if let DatabaseConfig::Sqlite { path } = &config
+        && !path.is_file()
+    {
         bail!(
-            "DB（{}）がありません。サーバーと同じ GALLEY_DATA_DIR で実行してください",
-            db_path.display()
+            "DB（{}）がありません。サーバーと同じ GALLEY_DATA_DIR（DynamoDB なら GALLEY_DB）で実行してください",
+            path.display()
         );
     }
-    let database = SqliteDatabase::open(&db_path).await?;
+    let repositories = database::open(&config).await?;
     let blobs = Arc::new(crate::open_blob_store(&data_dir)?);
     let purge = PurgeDocument::new(
-        Arc::new(database.projects()),
-        Arc::new(database.documents()),
-        Arc::new(database.revisions()),
+        repositories.projects,
+        repositories.documents,
+        repositories.revisions,
         blobs,
     );
     execute(
@@ -285,7 +291,7 @@ mod tests {
     use std::io::Cursor;
 
     use galley_core::{
-        adapter::blob_store::ObjectStoreBlobStore,
+        adapter::{blob_store::ObjectStoreBlobStore, sqlite::SqliteDatabase},
         app::{
             document::{CreateDocument, CreateDocumentInput, SlugSource},
             project::{CreateProject, ProjectInput},

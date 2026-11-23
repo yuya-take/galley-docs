@@ -6,7 +6,7 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
 
 構成図の元ファイルは `architecture.drawio`（draw.io で開いて直せる。AWS のアイコンは `mxgraph.aws4`）です。
 
-AWS で動かすためのアプリの変更は、まだ途中です（#73）。DynamoDB の adapter ができるまでは、下の「Lambda で動かす」の手順は確かめる用途にだけ使えます。
+AWS で動かすためのアプリの変更は、まだ途中です（#73）。DB は DynamoDB を使います（`GALLEY_DB=dynamodb://<テーブル名>`。テーブルの形は `docs/design.md` の「DynamoDB のテーブル」）。
 
 ## Lambda で動かす
 
@@ -31,7 +31,8 @@ Docker の構成と同じイメージを、そのまま Lambda のコンテナ�
 
 | 環境変数 | 値 | 理由 |
 | --- | --- | --- |
-| `GALLEY_DATA_DIR` | `/tmp` | Lambda で書き込めるのは `/tmp` だけ。既定の `/data` のままだと DB を作れずに起動に失敗する |
+| `GALLEY_DB` | `dynamodb://<テーブル名>` | DB に DynamoDB を使う。認証とリージョンは Lambda の実行ロールと `AWS_REGION`（Lambda が設定する）で決まる |
+| `GALLEY_DATA_DIR` | `/tmp` | Lambda で書き込めるのは `/tmp` だけ。DynamoDB と S3 を使えば何も書かないが、既定の `/data` のままだと起動時にディレクトリを作れずに失敗する |
 | `ALLOWED_HOSTS` | `galley.example.com` | CloudFront が転送する Host。Host の検査・CSRF の検査・MCP の Host の検査が Docker と同じに通る |
 | `GALLEY_APP_URL` | `https://galley.example.com` | MCP が返す資料のリンク |
 | `GALLEY_VIEWER_URL` | `https://docs.galley.example.com` | 画面の iframe に入れる資料配信の URL |
@@ -54,8 +55,28 @@ Lambda は実行環境を片付ける前に、アプリ（ランタイム）に 
 
 ### 注意
 
-- **DB はまだ使えない**: DynamoDB の adapter（#76）ができるまで、`GALLEY_DATA_DIR=/tmp` の SQLite は実行環境ごとに別々で、実行環境が片付けられると消えます。手元で確かめる用途にだけ使ってください
+- **`GALLEY_DB` を忘れない**: 指定しないと `GALLEY_DATA_DIR=/tmp` の SQLite になり、実行環境ごとに別々で、実行環境が片付けられると消えます
 - **資料の表示はまだ動かない**: 資料配信の URL を `/b/<hash>` にする変更（#80）と、S3 に書くときの `Content-Type`（PR #75 の 4）が入るまで、S3 から資料を配れません
+
+## 手元から資料を物理削除する（`galley purge`）
+
+AWS ではコンテナに入れないので、`galley purge` は手元から DynamoDB と S3 に向けて実行します。サーバー（Lambda）とは別のプロセスですが、DynamoDB の条件付き書き込みで、同時の登録とぶつかったら読み直してやり直します。
+
+```bash
+# 認証情報を環境変数にする（S3 の読み書きに使う object_store は、プロファイルや SSO を読まないため）
+eval "$(aws configure export-credentials --profile <プロファイル> --format env)"
+export AWS_REGION=ap-northeast-1
+
+GALLEY_DB=dynamodb://<テーブル名> \
+GALLEY_BLOB_STORE=s3://<バケット>/<プレフィックス> \
+  cargo run --release -p galley-server -- purge <プロジェクト>/<資料>[/v/<番号>]
+```
+
+Docker のイメージで実行するときは、同じ環境変数を `-e` で渡します（`docker run --rm -it -e GALLEY_DB -e GALLEY_BLOB_STORE -e AWS_REGION -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN ghcr.io/yuya-take/galley-docs purge ...`）。
+
+- 要る権限: DynamoDB のテーブルへの `GetItem`・`PutItem`・`UpdateItem`・`DeleteItem`・`Query`、S3 の `DeleteObject`（消す前に中身は読まない）
+- 版の多い資料（版が 25 個ほどを超えるもの）は、トランザクションを分けて古い版から消します。途中で止まっても、もう一度実行すれば続きを消せます
+- 消したあとは CloudFront のキャッシュを無効化します（#81 の手順）
 
 ## マルチアーキテクチャのイメージ
 
