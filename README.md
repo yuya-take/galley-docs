@@ -42,6 +42,9 @@ docker run -d --name galley --restart unless-stopped \
 | --- | --- | --- |
 | `ALLOWED_HOSTS` | なし（localhost だけ） | 受け付けるホスト名（カンマ区切り。ポートは書かなくてよい）。例：`galley.example.com,192.168.1.10` |
 | `MCP_TOKEN` | なし | 設定すると、`/mcp` へのリクエストに `Authorization: Bearer <トークン>` を求めます |
+| `MCP_OAUTH_RESOURCE` | なし | MCP の OAuth を前段（AWS の API Gateway など）で確かめるときの、MCP サーバーの URL（例：`https://galley.example.com/mcp`）。`MCP_OAUTH_AUTHORIZATION_SERVERS` と一緒に設定すると、`/.well-known/oauth-protected-resource/mcp` で保護されたリソースのメタデータ（RFC 9728）を返します。未設定なら 404。Docker では要りません |
+| `MCP_OAUTH_AUTHORIZATION_SERVERS` | なし | 認可サーバーの URL（カンマ区切り。Cognito なら `https://cognito-idp.<リージョン>.amazonaws.com/<ユーザープール ID>`） |
+| `MCP_OAUTH_SCOPES` | なし | メタデータの `scopes_supported` に出すスコープ（カンマ区切り。省略可） |
 | `GALLEY_VIEWER_URL` | アプリと同じホスト名の `:8081` | 資料配信の URL（`https://galley-docs.example.com` など）。資料配信に別のホスト名を割り当てるとき、`-p 9081:8081` のように公開するポートを変えたとき、リバースプロキシを前に置いたときに指定します。ホスト名は `ALLOWED_HOSTS` に自動で加わります |
 | `GALLEY_APP_URL` | リクエストの Host から作る | アプリの URL（`https://galley.example.com` など）。MCP が返す資料のリンクに使います |
 | `TZ` | `UTC` | 画面に出す日時のタイムゾーン（例：`Asia/Tokyo`） |
@@ -139,6 +142,8 @@ claude mcp add --transport http galley http://galley.example.com:8080/mcp \
 - サーバーに `MCP_TOKEN` を設定したときは、`--header "Authorization: Bearer <トークン>"` も付けます
 - ほかの PC から使うときは、サーバーの `ALLOWED_HOSTS` にホスト名（上の例なら `galley.example.com`）を入れます
 - 登録できるのは、外部リソース（CDN のスクリプト、Web フォント、外部の画像など）を読み込まない1ファイルの HTML だけです
+- サーバーは MCP のセッションを持ちません（`Mcp-Session-Id` を返さず、リクエストごとに処理します）。サーバーを再起動しても、クライアントはつなぎ直さずに使い続けられます
+- `MCP_OAUTH_*` は、`/mcp` のアクセストークンを前段（AWS の API Gateway の JWT オーソライザーなど）で確かめる構成のためのものです。アプリはメタデータを返すだけで、トークンは確かめません。**`MCP_TOKEN` を設定せずに `MCP_OAUTH_*` だけを設定すると、前段が無ければ `/mcp` を誰でも使えます**（起動時に警告を出します）。前段を置かない Docker の構成では、`MCP_TOKEN` を使ってください
 
 | ツール | 内容 |
 | --- | --- |
