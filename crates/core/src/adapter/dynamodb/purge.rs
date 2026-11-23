@@ -99,25 +99,7 @@ pub(super) async fn purge_revision(
                     revision.number
                 )));
             }
-            let authors: BTreeSet<String> =
-                load_revisions(table, document.id, Order::Ascending, None)
-                    .await?
-                    .into_iter()
-                    .filter(|other| other.id != revision.id)
-                    .map(|other| other.author_name.as_str().to_owned())
-                    .collect();
-            let update = if authors.is_empty() {
-                Expression::new("REMOVE #author_names")
-            } else {
-                Expression::new("SET #author_names = :authors")
-                    .value(":authors", item::name_set(authors))
-            }
-            .name("#author_names", "author_names");
-            // 数えたあとに版が足されていれば、その版の更新者が抜けるので読み直す
-            writes.push(
-                Write::update(Key::document(document.project_id, &document.slug), update)
-                    .when(same_current_revision(&document)),
-            );
+            writes.push(author_names_write(table, &document, &revision).await?);
         }
         let blobs = blob_changes(table, std::slice::from_ref(&revision)).await?;
         writes.extend(blobs.writes);
@@ -127,6 +109,29 @@ pub(super) async fn purge_revision(
             Err(err) => return Err(err),
         }
     }
+}
+
+/// 資料の「版を登録した人」を、消す版を除いた残りの版から数え直して書く。数えたあとに版が足されて
+/// いれば、その版の更新者が抜けるので、資料の現在版が読んだときのままであることを条件にする。
+/// 残りが無くても空のマップにする（属性を消すと、次の版の追加で `author_names.#name` に書けない）。
+async fn author_names_write(
+    table: &Table,
+    document: &Document,
+    purged: &Revision,
+) -> Result<Write, RepositoryError> {
+    let authors: BTreeSet<String> = load_revisions(table, document.id, Order::Ascending, None)
+        .await?
+        .into_iter()
+        .filter(|other| other.id != purged.id)
+        .map(|other| other.author_name.as_str().to_owned())
+        .collect();
+    Ok(Write::update(
+        Key::document(document.project_id, &document.slug),
+        Expression::new("SET #author_names = :authors")
+            .name("#author_names", "author_names")
+            .value(":authors", item::name_set(authors)),
+    )
+    .when(same_current_revision(document)))
 }
 
 /// 次のトランザクションで消す版と、それで資料も消すか。

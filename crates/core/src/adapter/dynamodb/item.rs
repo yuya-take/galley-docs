@@ -300,23 +300,19 @@ impl TryFrom<&Item> for StoredDocument {
 
 // ---- 版 ----
 
-/// 版の項目。版は作ったあと変わらないので、同じ属性の写しを3つのキーに置く。
-pub(super) fn revision_items(revision: &Revision) -> [Item; 3] {
-    [
-        Key::revision(revision.document_id, revision.number),
-        Key::revision_by_id(revision.id),
-        Key::revision_by_blob(&revision.blob_hash, revision.id),
-    ]
-    .map(|key| revision_item(key, revision))
-}
-
-/// 版の写しのキー（[`revision_items`] と同じ順）。
+/// 版の写しのキー（資料と番号、版の ID、ブロブ）。版は作ったあと変わらないので、同じ属性の写しを
+/// 3つのキーに置き、同じトランザクションで書いて同じトランザクションで消す。
 pub(super) fn revision_keys(revision: &Revision) -> [Key; 3] {
     [
         Key::revision(revision.document_id, revision.number),
         Key::revision_by_id(revision.id),
         Key::revision_by_blob(&revision.blob_hash, revision.id),
     ]
+}
+
+/// 版の写しの項目（[`revision_keys`] と同じ順）。
+pub(super) fn revision_items(revision: &Revision) -> [Item; 3] {
+    revision_keys(revision).map(|key| revision_item(key, revision))
 }
 
 fn revision_item(key: Key, revision: &Revision) -> Item {
