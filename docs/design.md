@@ -173,9 +173,13 @@ Topcoat のアセット（`$()` 式のスクリプト、フォントなど）は
 
 ### 資料の配信 URL
 
-ログインがないので署名付きトークンは使わず、リビジョン ID で直接配信する（例：`http://<資料ホスト>:8081/r/<revision_id>`）。リビジョンは変更されないので、`Cache-Control: public, max-age=31536000, immutable` を付ける。ID は小文字・ハイフン区切りの表記だけ受け付け、同じ版に URL が何通りもできないようにする。アーカイブした資料の版も配信する（アーカイブから戻せるため）。
+ログインがないので署名付きトークンは使わず、実体の SHA-256 で直接配信する（例：`http://<資料ホスト>:8081/b/<hash>`）。URL だけで中身が決まるので、AWS の構成では CloudFront が S3 から同じ URL で配れる（Lambda@Edge が `<prefix>/ab/cd/<hash>.html` に書き換える。#80、PR #75 の「資料配信を S3 から配る」）。中身で決まる URL なので、`Cache-Control: public, max-age=31536000, immutable` を付ける。ハッシュは 64 文字の小文字の16進数だけ受け付け（それ以外は 404）、同じ版に URL が何通りもできないようにし、ストレージの置き場所の外も指せないようにする。Docker の構成では DB を見ずにストレージから読み、読むたびに中身のハッシュを確かめる。アーカイブした資料の版も配信する（アーカイブから戻せるため）。物理削除（`galley purge`）で実体を消すと 404 になる。実体の削除に失敗したものは、消し直すまで配信され続ける（AWS の構成と同じ）。
 
-資料ビューアの「HTML をダウンロード」は `GET /r/<revision_id>/download` で、同じ HTML を `Content-Disposition: attachment; filename="<資料の slug>.html"` を付けて返す。画面と別のオリジンなので、`<a download>` ではファイル名を付けられないため。資料の slug は変えられるので、こちらはキャッシュさせない（`Cache-Control: no-store`）。CSP などのヘッダーは `/r/<revision_id>` と同じものを付ける。
+資料ビューアの「HTML をダウンロード」は `GET /b/<hash>?download=<資料の slug>` で、同じ HTML を `Content-Disposition: attachment; filename="<資料の slug>.html"` を付けて返す。画面と別のオリジンなので、`<a download>` ではファイル名を付けられないため。`download` の値は資料の slug の規則（英小文字・数字・ハイフン）に合うものだけ受け付け、合わなければ 400 にする。ファイル名も URL に入っているので、URL ごとの応答は変わらず、こちらも `immutable` にする。AWS の構成では、origin-response の Lambda@Edge が `Content-Disposition` を付ける（キャッシュのキーに `download` を入れる）。`download` 以外の問い合わせ文字列は無視する。
+
+実体の `Content-Type` は `text/html; charset=utf-8`（アップロードの検査で UTF-8 の HTML に限っている）。資料配信が返すときに付け、S3 に書くときはオブジェクトにも付ける（CloudFront が S3 のオブジェクトの Content-Type をそのまま返すため）。ローカルのディレクトリに置くときは付けない（ファイルは属性を持てない）。
+
+前の形の URL（`/r/<revision_id>`、`/r/<revision_id>/download`）は、既に配ったリンク（「別タブで開く」で開いて共有した URL など）が壊れないように残し、版から実体のハッシュを引いて振り向ける。`/r/<revision_id>` は `/b/<hash>` への 308（版の実体は変わらないので `immutable`）、`/r/<revision_id>/download` は `/b/<hash>?download=<資料の slug>` への 307（資料の slug は変えられるので `no-store`）。AWS の構成には前の形の URL は無い。
 
 ### ネットワークの前提と、外部サイトからの攻撃への対策
 
@@ -204,7 +208,7 @@ Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src '
 ```
 
 - `X-Content-Type-Options: nosniff` と `Content-Type: text/html; charset=utf-8` を付ける
-- CSP・`nosniff`・`Referrer-Policy: no-referrer` は 404 や 405 を含む資料配信のすべてのレスポンスに付ける（Axum のミドルウェア）。エラーは `Cache-Control: no-store`。エラーの本文は、ブラウザーで直接開かれるので JSON ではなく素のテキスト（「資料が見つかりません」など）にする
+- CSP・`nosniff`・`Referrer-Policy: no-referrer` は 404・405・リダイレクトを含む資料配信のすべてのレスポンスに付ける（Axum のミドルウェア）。エラーは `Cache-Control: no-store`。エラーの本文は、ブラウザーで直接開かれるので JSON ではなく素のテキスト（「資料が見つかりません」など）にする
 
 CSP では iframe 自身が別 URL へ遷移すること（URL にデータを載せる送り出し）までは防げない。fetch や画像読み込みによる送信、CDN の改ざんといった主な経路は止められる。
 
