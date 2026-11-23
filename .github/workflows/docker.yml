@@ -41,9 +41,13 @@ jobs:
           - arch: amd64
             platform: linux/amd64
             runner: ubuntu-24.04
+            rie: aws-lambda-rie-x86_64
+            rie-sha256: 5ccd1df155e92aa3eb055e60fba492afdebf424626a7983b13a39aa5c2b71616
           - arch: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
+            rie: aws-lambda-rie-arm64
+            rie-sha256: 65ade4687c22c308ff7acac6974d088d8aafaadea59e61985a083bad86f921d2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -85,9 +89,51 @@ jobs:
           # SIGTERM で止まる（無視されると 10 秒後に SIGKILL され、終了コードが 137 になる）
           docker stop galley
           test "$(docker inspect -f '{{.State.ExitCode}}' galley)" = 0
+
+      # Lambda のエミュレーター（aws-lambda-rie）で、Lambda のコンテナイメージとして動かす。
+      # RIE は /opt/extensions の Lambda Web Adapter も起動する（deploy/aws/README.md）
+      - name: Lambda として動くかを確かめる
+        env:
+          RIE_VERSION: v1.38
+          RIE: ${{ matrix.rie }}
+          RIE_SHA256: ${{ matrix.rie-sha256 }}
+        run: |
+          curl -fsSL --retry 5 -o aws-lambda-rie \
+            "https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/download/$RIE_VERSION/$RIE"
+          echo "$RIE_SHA256  aws-lambda-rie" | sha256sum -c -
+          chmod +x aws-lambda-rie
+          # アプリが :8080 で待ち受けるので、RIE は :9000 で呼び出しを受ける
+          docker run -d --name galley-lambda -p 9000:9000 \
+            -v "$PWD/aws-lambda-rie:/aws-lambda-rie:ro" \
+            -e GALLEY_DATA_DIR=/tmp -e GALLEY_VIEWER_ADDR=127.0.0.1:8081 \
+            --entrypoint /aws-lambda-rie galley:test \
+            --runtime-interface-emulator-address 0.0.0.0:9000 /app/galley
+          # API Gateway HTTP API（ペイロード 2.0）の形で GET する。statusCode と本文を出す
+          invoke() {
+            jq -n --arg path "$1" '{
+              version: "2.0", routeKey: "$default", rawPath: $path, rawQueryString: "",
+              headers: {host: "localhost"},
+              requestContext: {http: {method: "GET", path: $path, protocol: "HTTP/1.1", sourceIp: "127.0.0.1", userAgent: "ci"},
+                domainName: "localhost", requestId: "ci", routeKey: "$default", stage: "$default", timeEpoch: 0},
+              isBase64Encoded: false}' \
+            | curl -fsS --retry 30 --retry-all-errors --retry-delay 1 -d @- \
+                http://localhost:9000/2015-03-31/functions/function/invocations
+          }
+          invoke / > lambda-page.json
+          test "$(jq -r .statusCode lambda-page.json)" = 200
+          jq -r .body lambda-page.json > lambda-page.html
+          assets=$(grep -oE '/_topcoat/assets/[^"]+' lambda-page.html | sort -u)
+          test -n "$assets"
+          for asset in $assets; do
+            test "$(invoke "$asset" | jq -r .statusCode)" = 200
+          done
+          # Lambda Web Adapter が拡張として登録された（grep -q は途中で閉じて docker logs が SIGPIPE になるので使わない）
+          docker logs galley-lambda 2>&1 | grep 'External agent lambda-adapter'
       - name: ログ
         if: always()
-        run: docker logs galley || true
+        run: |
+          docker logs galley || true
+          docker logs galley-lambda || true
 
       - name: ghcr.io にログイン
         if: env.PUSH == 'true'
