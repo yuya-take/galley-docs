@@ -5,6 +5,7 @@
 //! Topcoat の API を直接使わない。
 
 mod app_url;
+pub mod author_header;
 pub mod host;
 mod viewer_url;
 

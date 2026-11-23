@@ -4,6 +4,8 @@
 use galley_core::domain::revision::AuthorName;
 use http::{HeaderMap, header};
 
+use crate::author_header;
+
 /// 更新者名を保存する Cookie の名前（`assets/app.js` と揃える）。
 pub const AUTHOR_COOKIE: &str = "galley_author";
 
@@ -18,7 +20,7 @@ pub fn from_headers(headers: &HeaderMap) -> Option<AuthorName> {
             let (name, value) = pair.trim().split_once('=')?;
             (name == AUTHOR_COOKIE).then_some(value)
         })
-        .and_then(percent_decode)
+        .and_then(author_header::percent_decode)
         .and_then(|name| AuthorName::parse(&name).ok())
 }
 
@@ -29,24 +31,6 @@ pub fn initial(name: &AuthorName) -> String {
         .next()
         .map(String::from)
         .unwrap_or_default()
-}
-
-/// `encodeURIComponent` で保存した値を戻す。UTF-8 として読めなければ `None`。
-fn percent_decode(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
-            decoded.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            decoded.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
 }
 
 #[cfg(test)]
