@@ -45,9 +45,9 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     services:
-      # DynamoDB の adapter の結合テスト用（メモリ上で動く）
+      # DynamoDB の adapter の結合テスト用（メモリ上で動く）。タグとダイジェスト（マルチアーキテクチャのインデックス）で固定する
       dynamodb:
-        image: amazon/dynamodb-local:3.3.2
+        image: amazon/dynamodb-local:3.3.2@sha256:6ada631ec7aa5fc83446855eb17233e3dad184fec47477e8140c6c569cfe0c86
         ports:
           - 8000:8000
     steps:
