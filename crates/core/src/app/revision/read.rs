@@ -10,7 +10,7 @@ use crate::{
     },
 };
 
-/// 版の HTML。資料配信がそのまま返す。
+/// 版と、その HTML。MCP の `get_document` が返す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevisionContent {
     pub revision: Revision,

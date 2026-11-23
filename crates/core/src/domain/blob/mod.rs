@@ -9,6 +9,10 @@ use sha2::{Digest, Sha256};
 
 pub use store::BlobStore;
 
+/// 実体の `Content-Type`。アップロードの検査で UTF-8 の HTML に限っているので、資料配信が返すときも、
+/// S3 に書くときも、この値を付ける。
+pub const HTML_CONTENT_TYPE: &str = "text/html; charset=utf-8";
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("ブロブのハッシュは 64 文字の16進数（小文字）です")]
 pub struct BlobHashError;

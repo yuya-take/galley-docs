@@ -157,6 +157,7 @@ claude mcp add --transport http galley http://galley.example.com:8080/mcp \
 ## ドキュメント
 
 - [設計書](docs/design.md)：目的、データモデル、システム構成、セキュリティ、画面、MCP
+- [AWS で動かす](deploy/aws/README.md)：AWS の構成図、Lambda での設定、手元で Lambda として確かめる手順（AWS 対応は作業中）
 - [コントリビューションガイド](CONTRIBUTING.md)：開発環境、ブランチ運用、PR の出し方
 - [セキュリティポリシー](SECURITY.md)：脆弱性の報告方法
 

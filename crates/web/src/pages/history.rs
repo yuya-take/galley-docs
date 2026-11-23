@@ -199,7 +199,7 @@ pub async fn revision_preview(
         .boxed());
     };
     let is_latest = history.is_latest(&revision);
-    let frame_url = host(cx).and_then(|host| app.viewer_url.revision_url(host, revision.id));
+    let frame_url = host(cx).and_then(|host| app.viewer_url.blob_url(host, &revision.blob_hash));
     let frame_title = format!(
         "{}（第{number}版）のプレビュー",
         history.document.title.as_str()
