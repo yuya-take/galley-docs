@@ -130,7 +130,7 @@ pub async fn protected_resource_metadata(
     State(metadata): State<Option<Arc<ProtectedResourceMetadata>>>,
 ) -> Response {
     match metadata {
-        Some(metadata) => Json(metadata.as_ref().clone()).into_response(),
+        Some(metadata) => Json(metadata.as_ref()).into_response(),
         None => (
             StatusCode::NOT_FOUND,
             [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
