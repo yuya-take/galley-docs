@@ -152,10 +152,10 @@ AWS では、画面と MCP を Lambda で動かし、資料は S3 から CloudFr
 
    ```bash
    claude mcp add --transport http galley "$(terraform output -raw mcp_url)" \
-     --header "X-Author-Name: Sato"
+     --header "X-Author-Name: %E4%BD%90%E8%97%A4"
    ```
 
-   Claude Code では、`/mcp` でサーバーを選んで認証します。AWS では `MCP_TOKEN` を使いません（`/mcp` は API Gateway の JWT オーソライザーが Cognito のアクセストークンを確かめます）。Claude Code は ASCII 以外のヘッダーの値を送れないので、`X-Author-Name` は英字で書いてください（#84）。
+   Claude Code では、`/mcp` でサーバーを選んで認証します。AWS では `MCP_TOKEN` を使いません（`/mcp` は API Gateway の JWT オーソライザーが Cognito のアクセストークンを確かめます）。日本語の名前は、Docker の構成と同じく UTF-8 をパーセントエンコードした値で入れます（上の例は「佐藤」。リポジトリの README の「AI から登録する（MCP）」）。画面の「AI から登録する」に、ブラウザに保存した名前をエンコードしたコマンドが出ます。
 
 ログアウトは `https://<app_domain>/_auth/signout` です（Cookie を消し、リフレッシュトークンを取り消して、Cognito のログアウトに回します）。
 
@@ -208,7 +208,7 @@ PR #75 の「Terraform の段階で確かめること」です。`APP=galley.exa
    - `curl -sS "https://$APP/.well-known/oauth-protected-resource/mcp" | jq` が `resource`（`https://$APP/mcp`）と `authorization_servers`（Cognito の発行元）を返す
    - `curl -sS -o /dev/null -w '%{http_code}\n' -X POST "https://$APP/mcp"` が 401 を返す
    - 手順の 8 のとおり Claude Code に追加し、`/mcp` から認証してブラウザーでログインできること。続けて `list_projects`・`create_document` を呼べること
-   - 通らないとき: 動的なクライアント登録が有効か（手順の 6 の `registration_endpoint`）、アクセストークンの `aud` が `https://$APP/mcp` か（Claude Code が `resource` を送っているか）を確かめます。API Gateway の JWT オーソライザーで断られた理由は、ステージのアクセスログを一時的に有効にすると `$context.authorizer.error` で見られます
+   - 通らないとき: 動的なクライアント登録が有効か（手順の 6 の `registration_endpoint`）、アクセストークンの `aud` が `https://$APP/mcp` か（Claude Code が `resource` を送っているか）を確かめます。トークンを持って `/mcp` が 403 になるなら、トークンの `scope` に `https://$APP/mcp/access` が無い（クライアントが `scopes_supported` のスコープを求めていない）ことが考えられます。API Gateway の JWT オーソライザーで断られた理由は、ステージのアクセスログを一時的に有効にすると `$context.authorizer.error` で見られます
 
 ### 物理削除のあと
 
@@ -267,6 +267,7 @@ CloudFront が API Gateway に付ける `X-Origin-Verify` の値を入れ替え�
 
 ### 注意
 
+- state には秘密のヘッダーの値（`random_password`）が平文で入ります。state の置き場所は、読める人を絞ってください
 - CloudFront の標準ログは出していません。出すときは、Cookie を記録しない設定にしてください（ログインのトークンが入るため）
 - Lambda@Edge のログは、関数が動いたリージョンの CloudWatch Logs の `/aws/lambda/us-east-1.<name>-edge-auth` に出ます（日本から使えば、ほぼ東京）
 - Cognito の発行元は `https://cognito-idp.<region>.amazonaws.com/<プールの ID>` の形（ORIGINAL）です。AWS プロバイダーが発行元の設定（IssuerConfiguration）をまだ扱えないので、既定のままにしています。コンソールで UPDATED に変えると、API Gateway の JWT オーソライザーと MCP のメタデータの発行元が合わなくなります
