@@ -15,6 +15,9 @@ galley-core = { path = "crates/core" }
 galley-web = { path = "crates/web" }
 anyhow = "1"
 async-trait = "0.1"
+# DynamoDB の adapter。TLS は rustls（OpenSSL に依存しない）。aws-sdk-dynamodb の既定の rustls は古い HTTP クライアントなので外す
+aws-config = "1.13.3"
+aws-sdk-dynamodb = { version = "1.140.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 base64 = "0.23"
 axum = "0.8.9"
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +29,7 @@ tower = { version = "0.5.3", features = ["util"] }
 topcoat = { version = "0.10.0", default-features = false }
 http = "1"
 http-body-util = "0.1.5"
+futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 jiff = "0.2"
 lol_html = "3.0.1"
 htmlize = { version = "1.1.0", features = ["unescape"] }
