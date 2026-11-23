@@ -21,7 +21,7 @@ Galley は依存の向きを内側（ドメイン）に揃える。Topcoat は�
 │                           アップロード検査、リポジトリ │
 │                           とストレージのトレイト      │
 ├──────────────────────────────────────────────────────┤
-│ crates/core/src/adapter   Toasty（SQLite）と          │
+│ crates/core/src/adapter   Toasty（SQLite）、DynamoDB、│
 │                           object_store の実装         │
 └──────────────────────────────────────────────────────┘
 crates/server/src/main.rs   組み立て（adapter を生成して app に渡す）
@@ -48,7 +48,8 @@ crates/core/src/
 │   └── revision/      add.rs（新しい版）、revert.rs（この版に戻す）
 └── adapter/
     ├── blob_store.rs  ObjectStoreBlobStore（ローカル・S3 互換・メモリ）
-    └── sqlite/        model.rs（Toasty のモデル）、集約ごとのリポジトリ、convert.rs、raw.rs
+    ├── sqlite/        model.rs（Toasty のモデル）、集約ごとのリポジトリ、convert.rs、raw.rs
+    └── dynamodb/      table.rs（読み書き）、keys.rs（キー）、item.rs（変換）、集約ごとのリポジトリ、list.rs（一覧）、purge.rs（物理削除）
 ```
 
 - 新しい集約は domain と app に同じ名前のフォルダを作る（例：アップロード検査は `domain/upload/`、版の登録は `app/revision/register.rs`）
@@ -62,7 +63,7 @@ crates/core/src/
   - 許可: `serde`、`uuid`、`thiserror`、`sha2`、`base64`、HTML・CSS の解析（`lol_html`、`cssparser`、`htmlize`）など、純粋な計算のクレート
 - **app**: domain のトレイト経由でだけ DB とストレージを使う。`adapter` を直接使わない
 - **presentation**（web、server の http・mcp）: `app` のユースケースを呼ぶだけ。`adapter` や `toasty` を直接使わない
-- **組み立て**: `crates/server/src/main.rs` だけが adapter を生成し、app に注入してよい
+- **組み立て**: `crates/server/src/main.rs`（と、DB を選んで開く `database.rs`）だけが adapter を生成し、app に注入してよい
 - **クレート間**: `galley-core` は `galley-web`・`galley-server`・Topcoat に依存しない
 
 ## app（ユースケース）の責務
@@ -110,5 +111,5 @@ impl RegisterRevision {
 ## 型の変換
 
 - presentation の入出力型（serde の Request / Response、MCP ツールの引数）は presentation に置き、`app` の入出力型に変換して渡す
-- adapter のモデル（Toasty の型）は adapter の外に出さず、domain の型に変換して返す
+- adapter のモデル（Toasty の型、DynamoDB の項目）は adapter の外に出さず、domain の型に変換して返す
 - 変換は `From` / `TryFrom` で書く

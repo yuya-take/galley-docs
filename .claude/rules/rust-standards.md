@@ -33,7 +33,7 @@ paths:
 - **Web**: `axum`（外側のルーター、MCP、資料配信、Host 検査などの共通ミドルウェア）、Topcoat（画面のみ。Axum の `fallback_service` に `TowerService` として載せる）
   - Topcoat だけでも MCP・資料配信は作れるが、Topcoat は破壊的変更が多いため、セキュリティの要（資料配信）と公開 API（MCP）は安定した Axum に置く（#5）
 - **MCP**: `rmcp`
-- **DB**: SQLite + `toasty`
+- **DB**: SQLite + `toasty`（既定）、DynamoDB + `aws-sdk-dynamodb`（AWS。`GALLEY_DB=dynamodb://<テーブル名>`）
 - **Storage**: `object_store`
 - **Error Handling**: `thiserror`（`galley-core` のエラー型）、`anyhow`（`galley-server` の起動処理）
 - **Serialization**: `serde` + `serde_json`
